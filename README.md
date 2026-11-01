@@ -1,4 +1,4 @@
-# Comfychair
+# Comfy Chair
 
 > “Cardinal Fang! Fetch…THE COMFY CHAIR!”
 >
@@ -6,17 +6,35 @@
 
 Typed nodes, edges, and indexes for Python, backed by Redis.
 
-Comfychair stores objects by key and relationships as records of their own. A
-relationship has a source, a target, and ordinary fields: when a user was assigned
-a task, its priority, or its status. Retrieve one record by key, find it through a
-unique lookup, or page through a node's relationships in a declared order.
+Comfy Chair stores records by key and relationships as records with their own
+metadata. Type annotations define fields. Explicit indexes provide unique
+lookups and ordered traversal. Namespaces keep independent collections of data
+separate.
 
-**Status: API design proposal.** This README describes the intended interface for
-review. There is no implementation or installable release in this repository yet.
-Examples assume models have been bound to a Redis connection; connection
-configuration remains to be designed.
+The interface centers on five concepts:
 
-## Define records
+- **Node:** a record identified by a key, with a generated UUID by default.
+- **Edge:** a directed relationship identified by its source and target keys.
+- **Lookup:** a unique index for exact matches.
+- **Ordering:** an index for ordered traversal, optionally within an equality filter.
+- **Page:** a materialized sequence of results with a continuation cursor.
+
+**Development status:** design stage. The API below specifies the intended
+behavior; an implementation is not yet available. Examples assume a configured
+Redis connection.
+
+## Models and namespaces
+
+Declare stored fields with Python type annotations. Constructors accept keyword
+arguments, and defaults use dataclass-style declarations.
+
+A model's `namespace` separates its records and indexes from those in other
+namespaces. Model names distinguish record types within a namespace. The same
+primary key can exist in different models or namespaces without a collision.
+Related models share a namespace; edge references include the identity of their
+endpoint models.
+
+For example, a small task application could define:
 
 ```python
 from dataclasses import field
@@ -31,6 +49,8 @@ def now():
 
 
 class User(Node):
+    namespace = "example"
+
     key: UUID = field(default_factory=uuid4)
     name: str
     email: str
@@ -41,6 +61,8 @@ class User(Node):
 
 
 class Task(Node):
+    namespace = "example"
+
     title: str
     created_at: datetime = field(default_factory=now)
 
@@ -50,6 +72,8 @@ class Task(Node):
 
 
 class Assignment(Edge[User, Task]):
+    namespace = "example"
+
     status: str = "open"
     priority: int = 0
     created_at: datetime = field(default_factory=now)
@@ -61,21 +85,36 @@ class Assignment(Edge[User, Task]):
     )
 ```
 
-Field annotations define stored data. Constructors accept keyword arguments;
-defaults and factories use dataclass-style declarations.
+`Node` supplies a `key: UUID` field with a generated UUID by default. The
+`User` declaration shows it explicitly; `Task` inherits it. Names and titles
+are ordinary fields. Primary lookup by key is automatic.
 
-`Node` supplies a `key: UUID` field with a generated UUID by default. `User` spells
-out that declaration for clarity; `Task` inherits it. Names and titles are ordinary
-mutable fields. Primary lookup by key is automatic.
+`Edge[User, Task]` supplies typed `source` and `target` endpoints. Its default
+key is `(source.key, target.key)`, scoped to the edge model and namespace. There
+is one edge per endpoint pair for a given edge model. Different edge models can
+connect the same pair independently.
 
-`Edge[User, Task]` supplies typed `source` and `target` endpoints. An assignment's
-default key is the pair `(source.key, target.key)`, scoped to the `Assignment`
-model. There is one assignment per user/task pair. Another edge model may connect
-the same pair independently.
+Edges store endpoint references and their own fields, not copies of endpoint
+records. Fetching an edge does not fetch either endpoint. Relationships are
+directed; outgoing indexes do not imply an incoming index.
 
-Edges store endpoint keys and their own fields, not copies of the endpoint
-records. Fetching an edge does not fetch its user and task. Relationships are
-directed; a source's outgoing list does not imply an index of incoming edges.
+Namespaces organize storage. They are not authorization boundaries and do not
+by themselves place Redis Cluster keys in the same hash slot.
+
+## Serialization
+
+Record values are serialized as JSON. Standard JSON values include strings,
+numbers, booleans, nulls, arrays, and objects.
+
+Serialization also supports fields whose Python types are not native JSON
+types, including UUIDs and datetimes. These values use explicit JSON-compatible
+encodings and are restored to their declared Python types when read. Custom
+field types can supply encoding and decoding adapters. Unsupported values raise
+a serialization error rather than silently converting to strings.
+
+Serialization preserves field values; it does not recursively persist related
+nodes. Index encodings are separate from record JSON: an ordered index must
+preserve the field's comparison semantics rather than sort its JSON text.
 
 ## Store and retrieve
 
@@ -95,78 +134,89 @@ same_assignment = Assignment.get(user, task)
 
 task.title = "Write the README introduction"
 task.set()
-
-assignment.delete()
 ```
 
-Constructing or changing a Python object performs no I/O. Call `set()` to insert
-or replace the stored record. Replacing a record also updates its indexes.
-`get()` returns a record or `None` when no match exists. `delete()` removes the
-record and its index entries.
+Constructing or changing a Python object performs no I/O. Persistence is explicit:
 
-Use `add()` for insert-only behavior. Outside a transaction it returns `True`
-when inserted and `False` when the primary key already exists. A conflicting
-secondary unique lookup raises `IntegrityError`; it never replaces the other
-record. Conditional-operation results inside a transaction still need a precise
-contract and are not illustrated here.
+| Method | Behavior |
+| --- | --- |
+| `Model.get(...)` | Return the matching record, or `None` if absent. |
+| `record.set()` | Insert or replace the record and update its indexes. |
+| `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
+| `record.delete()` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
 
-Persistence methods belong to the record or its model. There is no dictionary
-interface for storing records and no separate `db.get(User, ...)` interface.
+A conflicting secondary unique lookup raises `IntegrityError`. It never
+replaces another record.
+
+### Deletion
+
+```python
+deleted = assignment.delete()       # True if the stored edge existed.
+deleted_again = assignment.delete() # False after it has been removed.
+```
+
+There are no cascading deletes. Deleting a node leaves its incoming and outgoing
+edges intact. Deleting an edge leaves both endpoint nodes intact. Only index
+entries belonging to the deleted record are removed automatically.
+
+Applications explicitly remove any related records they no longer need. An
+edge can therefore refer to a missing node; fetching that node returns `None`.
 
 ## Lookups and orderings
 
-An index declaration names stored fields. Two index types cover different access
-patterns:
-
-| Declaration | Purpose | Access |
-| --- | --- | --- |
-| `Lookup("email")` | Unique exact match | `User.get(email="alice@example.com")` |
-| `Ordering("created_at")` | Ordered traversal | `Task.page(order_by="created_at", limit=20)` |
-| `Ordering("priority")` on an edge | Ordered traversal for one source | `Assignment.page(user, order_by="priority", reverse=True, limit=20)` |
-| `Ordering("status", "created_at")` on an edge | Match a leading field, then traverse in order | `Assignment.page(user, where={"status": "open"}, order_by="created_at", reverse=True, limit=20)` |
-
-`Lookup` enforces uniqueness and returns at most one record. A lookup with
-multiple fields requires an exact value for every field. It does not provide
+`Lookup` enforces uniqueness and supports exact matches. Every field in a
+composite lookup must be supplied. It returns at most one record and provides no
 ordered traversal.
 
-`Ordering` allows duplicate values. Equality filters match leading fields in
-the declaration; the following field supplies the requested ordering. Queries
-must match a declared index. Unsupported filters or orderings raise an error
-instead of silently scanning the data.
+`Ordering` supports traversal with duplicate values. Equality filters match
+leading fields in the declaration; the following field supplies the ordering.
 
-Edge indexes are scoped to the source automatically. Declare
-`Ordering("created_at")`, not `Ordering("source", "created_at")`. Likewise,
-`Lookup("external_id")` on an edge would make `external_id` unique within each
-source's outgoing edges.
+| Declaration | Example access |
+| --- | --- |
+| `Lookup("email")` | `User.get(email="alice@example.com")` |
+| `Ordering("created_at")` | `Task.page(order_by="created_at", limit=20)` |
+| `Ordering("priority")` on an edge | `Assignment.page(user, order_by="priority", reverse=True, limit=20)` |
+| `Ordering("status", "created_at")` on an edge | `Assignment.page(user, where={"status": "open"}, order_by="created_at", reverse=True, limit=20)` |
 
-Default primary lookups require no declaration: a node uses its key, and an edge
-uses its source and target. An explicit primary lookup can replace the default:
+Edge indexes are scoped to their source automatically. An
+`Ordering("created_at")` indexes outgoing edges for each source.
+A `Lookup("external_id")` on an edge makes that field unique within each source's
+outgoing edges. The source does not need to appear in either declaration.
+
+Queries must match a declared index. Unsupported filters or orderings raise an
+error instead of scanning the data.
+
+### Primary keys
+
+Nodes automatically have a primary lookup on `key`; edges automatically have
+one on their source and target. An explicit primary lookup replaces the default:
 
 ```python
-class ExternalTask(Node):
-    tenant: UUID
+class Document(Node):
+    namespace = "archive"
+
+    collection: str
     external_id: str
     title: str
 
     indexes = (
-        Lookup("tenant", "external_id", primary=True),
+        Lookup("collection", "external_id", primary=True),
     )
 
 
-external = ExternalTask(
-    tenant=user.key,
-    external_id="TASK-42",
-    title="Review the proposal",
+document = Document(
+    collection="manuals",
+    external_id="installation",
+    title="Installation guide",
 )
-external.set()
+document.set()
 
-found = ExternalTask.get(tenant=user.key, external_id="TASK-42")
+found = Document.get(collection="manuals", external_id="installation")
 ```
 
-Here, `.key` is the composite `(tenant, external_id)` identity; there is no
-additional generated UUID identity. Edge models may also declare an alternative
-primary lookup. Primary identity and source-scoped secondary indexes are distinct
-concerns; the exact rules for custom edge identities remain part of the design.
+Here, `.key` is the composite `(collection, external_id)` identity, with no
+additional UUID identity. Edge models can also declare an alternative primary
+lookup.
 
 ## Pages and cursors
 
@@ -194,23 +244,25 @@ if page.cursor is not None:
 ```
 
 `Page` is a materialized, read-only sequence. Iteration, indexing, slicing, and
-`len(page)` operate on the fetched records without further requests. Its length
-is the number of records in this page, not the total number of matching records.
+`len(page)` operate on fetched records without further requests. Its length is
+the number of records in this page, not the total number of matches.
 
 `page.cursor` is an opaque, serializable continuation token, or `None` when the
-query is exhausted. Pass it back with the same source, filters, ordering, and
-direction. Omitting the cursor starts at the beginning. A cursor cannot be reused
-for a different query or an incompatible index definition.
+query is exhausted. Pass it back with the same namespace, model, source, filters,
+ordering, and direction. Omitting the cursor starts at the beginning. A cursor
+cannot be reused for a different query or an incompatible index definition.
 
 Pagination continues exclusively after the last ordering value and primary-key
 tiebreaker. Equal timestamps or priorities therefore have a deterministic order.
-Pages read live data, not a snapshot: inserts and deletes may change later pages,
-and changing an ordering or filtering field between requests can cause a record
-to be skipped or seen again.
+
+Pages read live data, not a snapshot. Inserts and deletes may change later pages.
+Changing an ordering or filtering field between requests can cause a record to
+be skipped or seen again.
 
 ## Transactions
 
-Use a transaction to group related writes:
+Each write maintains its record and indexes together. Use a transaction to group
+related writes:
 
 ```python
 task = Task(title="Review the README")
@@ -221,75 +273,25 @@ with transaction():
     assignment.set()
 ```
 
-Writes join the active transaction. A normal exit commits the queued work; an
-exception escaping the block discards it before commit. `set()` captures the
-record's state when called, so later Python mutations do not silently alter an
-already queued write. Aborting persistence does not undo changes to Python
-objects.
-
-Each individual write must maintain its record and indexes together. An explicit
-transaction groups those writes so other clients cannot observe intermediate
-steps of a successful commit.
+Writes join the active transaction. A normal exit commits pending writes; an
+exception escaping the block before commit discards them. Other clients cannot
+observe intermediate steps of a successful commit. Aborting persistence does
+not undo changes to Python objects.
 
 **Transactions cannot be nested.** Entering `transaction()` while one is active
-raises `TransactionError`. There are no savepoints or independently rolled-back
-inner scopes. Helpers called inside a transaction should perform ordinary writes
-and let their caller own the transaction boundary.
+raises `TransactionError`. There are no savepoints. Helpers called inside a
+transaction perform ordinary writes and let their caller own the transaction
+boundary.
 
-These guarantees must fit Redis's execution model:
+Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
+hash slot. Transactions across cluster shards are not supported.
 
-- Atomic multi-key work requires a single Redis primary, or keys in one Redis
-  Cluster hash slot. Arbitrary transactions across cluster shards are outside
-  the initial scope.
-- Redis `MULTI`/`EXEC` does not undo commands that have already run when another
-  command fails during execution. Comfychair must validate operations and unique
-  constraints before applying writes; transaction syntax alone cannot provide
-  SQL-style rollback.
-- Isolation does not imply durable replication. Persistence and failover behavior
-  depend on the Redis deployment.
-
-The commit protocol, conflict detection, reads within a transaction, and handling
-of ambiguous outcomes after connection loss still require implementation design.
-This proposal does not promise serializable read/modify/write transactions or
-automatic retries of a Python `with` block.
+Redis `MULTI`/`EXEC` does not undo previously executed commands when another
+command fails during execution. Validation and uniqueness checks must be part
+of the commit protocol; the transaction context alone does not provide rollback
+after execution errors. A lost connection during commit can leave its outcome
+unknown. Persistence and failover durability depend on the Redis deployment.
 
 See [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/)
 and the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
 for the underlying constraints.
-
-## Bulk operations
-
-Bulk methods are a proposed convenience for reducing round trips:
-
-```python
-users = User.get_many([user.key, another_user_key])
-User.set_many(changed_users)
-User.delete_many(obsolete_user_keys)
-```
-
-`get_many()` returns results in input order, with `None` for missing records.
-Bulk writes preserve the consistency of each record and its indexes, but are not
-atomic as a group unless enclosed in an explicit transaction. Pipelining is an
-implementation detail. There is no separate `batch()` context or deferred-result
-API in this proposal.
-
-## Scope and remaining design
-
-Comfychair targets applications that know their access patterns: retrieve a
-record, follow a typed relationship, or list one node's relationships in a useful
-order. It does not propose joins, arbitrary graph traversal, a query language, or
-automatic full scans.
-
-Before implementation, the remaining design work includes:
-
-- Connection configuration, model registration, and key namespaces.
-- Field validation, serialization, and supported Python types.
-- The representation of typed endpoint references and explicit endpoint loading.
-- Custom edge identities and alternative index scopes, including incoming edges.
-- Transaction reads, conflict reporting, conditional results, and commit failures.
-- Node deletion behavior, dangling edges, and any explicit cascade operations.
-- Schema changes, index creation, and index backfills for existing records.
-- Async support, packaging, and licensing.
-
-The examples establish the proposed API shape. They are not performance claims
-or a statement that these behaviors have already been implemented.
