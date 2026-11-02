@@ -176,20 +176,52 @@ its counterpart on the transaction object.
 | --- | --- |
 | `Model.get(...)` | Return the matching record, or `None` if absent. |
 | `record.set()` | Insert or replace the record and update its indexes. |
-| `record.set(if_not_modified=True)` | Replace the record only if its stored ETag matches the version held by this object; otherwise raise `ConflictError`. |
+| `record.set(mode=IF_NOT_MODIFIED)` | Replace the record only if its stored ETag matches the version held by this object; otherwise raise `ConflictError`. |
 | `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
 | `record.delete()` or `Model.delete(key)` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
 
 A conflicting secondary unique lookup raises `IntegrityError`. It never
 replaces another record.
 
-### Conditional updates
+### Write modes
+
+`set()` accepts a mode controlling whether the write is allowed:
+
+| Mode | Behavior |
+| --- | --- |
+| `ALWAYS` | Insert or replace, regardless of existence or ETag. The default. |
+| `IF_NOT_MODIFIED` | Replace only if the record exists and its ETag matches the object's ETag. |
+| `IF_MISSING` | Insert only if the primary key does not exist. |
+| `IF_EXISTS` | Replace only if the primary key exists, regardless of its ETag. |
+
+Modes are members of the `Mode` enum and are also exported as module-level
+constants. `IF_NOT_MODIFIED` and `Mode.IF_NOT_MODIFIED` are the same value.
+
+```python
+from comfychair import ALWAYS, IF_NOT_MODIFIED, IF_MISSING, IF_EXISTS, Mode
+
+new_task = Task(title="Write the installation guide")
+new_task.set(mode=IF_MISSING)
+
+new_task.title = "Revise the installation guide"
+new_task.set(mode=IF_EXISTS)
+```
+
+A failed mode condition raises `ConflictError` without changing the record or
+its indexes. Every mode still enforces validation and unique secondary indexes.
+Unsupported modes raise `ValueError` before the operation is sent or queued.
+
+`add()` remains the insert-only convenience method: it returns `False` when
+the primary key already exists. `set(mode=IF_MISSING)` instead requires the
+insertion to succeed and raises `ConflictError` if that key exists.
+
+### ETags and conditional updates
 
 Every successful insert or replacement generates a fresh, opaque ETag.
 Fetching a record retains its ETag automatically, available as `record.etag`.
 Changing Python fields does not change the ETag.
 
-Use `if_not_modified=True` to protect a read-modify-write operation:
+Use `mode=IF_NOT_MODIFIED` to protect a read-modify-write operation:
 
 ```python
 task = Task.get(task_key)
@@ -197,7 +229,7 @@ if task is None:
     raise KeyError(task_key)
 
 task.title = "Updated title"
-task.set(if_not_modified=True)
+task.set(mode=IF_NOT_MODIFIED)
 ```
 
 The write succeeds only if the stored record still has the ETag that was read.
@@ -211,9 +243,8 @@ changed. ETags are random version tokens rather than content hashes; restoring
 old field values does not restore an old ETag.
 
 Newly constructed objects and key-only references have no ETag until a successful
-write or an explicit fetch provides one. Requesting `if_not_modified=True`
-without an ETag raises an error before sending the write. Use `add()` for
-insert-only behavior.
+write or an explicit fetch provides one. Requesting `mode=IF_NOT_MODIFIED`
+without an ETag raises `ValueError` before the operation is sent or queued.
 
 A conflict does not retry the operation automatically. Fetch the current record
 and decide whether to reapply the change.
@@ -250,6 +281,27 @@ user_deleted = User.delete(user.key)
 The caller does not need to fetch an object first. Index cleanup uses the stored
 record, not possibly stale field values on an instance. For composite node keys,
 pass the key tuple to `Model.delete(key)`.
+
+Deletion supports exactly two modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `ALWAYS` | Delete if present; return `True` if deleted and `False` if absent. The default. |
+| `IF_NOT_MODIFIED` | Delete only if the record exists and its ETag matches the object's ETag; return `True` on success, otherwise raise `ConflictError`. |
+
+```python
+task = Task.get(task_key)
+if task is None:
+    raise KeyError(task_key)
+
+deleted = task.delete(mode=IF_NOT_MODIFIED)
+```
+
+Conditional deletion compares the ETag and removes the record and its index
+entries atomically. It requires an object carrying an ETag; a key-only reference
+or model-and-key call cannot supply that version and raises `ValueError` if
+used with `IF_NOT_MODIFIED`. `IF_MISSING` and `IF_EXISTS` are unsupported for
+deletion and raise `ValueError`.
 
 There are no cascading deletes. Deleting a node leaves its incoming and outgoing
 edges intact. Deleting an edge leaves both endpoint nodes intact. Only index
@@ -379,8 +431,10 @@ Only calls through `tx` participate. Ordinary calls such as `task.set()` or
 Pass the transaction object to helpers that need to contribute writes.
 
 `tx.set(record)`, `tx.add(record)`, and `tx.delete(record)` queue their
-operations. Deletion also accepts a model and primary key, without fetching an
-object first:
+operations. `tx.set()` accepts all four write modes; `tx.delete()` accepts
+`ALWAYS` and `IF_NOT_MODIFIED`, with the same ETag requirements as immediate
+deletion. Both default to `ALWAYS`. Deletion also accepts a model and primary
+key, without fetching an object first:
 
 ```python
 with transaction() as tx:
@@ -394,14 +448,13 @@ an exception escaping the block before commit discards them. After successful
 execution, `tx.results` contains one result per operation in call order.
 `add()` and `delete()` produce their boolean results at that point.
 
-Queueing a write captures the record's values and, for a conditional write, its
-expected ETag. Later Python mutations do not change the queued operation.
+Queueing a write captures its mode, the record's values, and any expected ETag. Later Python mutations do not change the queued operation.
 Successful writes refresh their objects' ETags after commit is confirmed.
 Discarding the transaction does not undo changes to Python objects.
 
 ### Conditions apply to the whole transaction
 
-Use `tx.set(record, if_not_modified=True)` to make the transaction conditional
+Use `tx.set(record, mode=IF_NOT_MODIFIED)` to make the transaction conditional
 on a previously read version:
 
 ```python
@@ -412,24 +465,29 @@ if task is None:
 task.title = "Completed review"
 
 with transaction() as tx:
-    tx.set(task, if_not_modified=True)
+    tx.set(task, mode=IF_NOT_MODIFIED)
     tx.delete(Assignment, user_key, task_key)
 ```
 
-At commit, **all expected ETags are checked before any queued write is applied**.
-If any ETag differs, or a conditionally updated record is missing, commit raises
+At commit, **all mode conditions are checked before any queued write is applied**.
+This includes ETag matches for conditional updates and deletions, absence for
+`IF_MISSING`, and presence for `IF_EXISTS`. If any condition fails, commit raises
 `ConflictError` and none of the transaction's writes execute. In this example,
 a conflict leaves both the task and the assignment unchanged by this transaction.
 
 Condition checking and applying the writes form one atomic operation on Redis;
-another client cannot change a checked record between those steps. Every ETag
-condition compares against stored state before the transaction's writes begin.
-Unconditional writes in the same transaction are also withheld if any ETag
+another client cannot change a checked record between those steps. Mode
+conditions compare against stored state before the transaction's writes begin.
+Unconditional writes in the same transaction are also withheld if any mode
 condition fails.
+
+`tx.add()` retains its boolean result: an existing primary key produces `False`
+and does not cancel the transaction. Use `tx.set(record, mode=IF_MISSING)` when
+insertion must succeed for the transaction to proceed.
 
 Reads use ordinary model methods and execute immediately. They may occur before
 or inside the block, but are not snapshot reads and do not see queued writes.
-Only versions explicitly supplied through `if_not_modified=True` are checked;
+Only versions explicitly supplied through `mode=IF_NOT_MODIFIED` are checked;
 other reads and query results are not protected. There is no local
 read-your-writes cache or automatic retry.
 
@@ -442,7 +500,7 @@ require `watch()` or `multi()` calls.
 Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
 hash slot. Transactions across cluster shards are not supported.
 
-ETag conflicts are detected before writes begin. This guarantee does not imply
+Mode-condition conflicts are detected before writes begin. This guarantee does not imply
 general rollback after arbitrary execution errors. Redis does not provide that
 rollback, and a raised execution error must not be taken to mean that nothing
 was written. Individual record operations must still enforce uniqueness and
