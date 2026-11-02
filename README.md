@@ -28,11 +28,12 @@ Redis connection.
 Declare stored fields with Python type annotations. Constructors accept keyword
 arguments, and defaults use dataclass-style declarations.
 
-A model's `namespace` separates its records and indexes from those in other
-namespaces. Model names distinguish record types within a namespace. The same
-primary key can exist in different models or namespaces without a collision.
-Related models share a namespace; edge references include the identity of their
-endpoint models.
+A model's optional `namespace` separates its records and indexes from those in
+other namespaces. Omit it to use no namespace; there is no implicit namespace
+prefix. Model names distinguish record types with or without a namespace. The
+same primary key can exist in different models or namespaces without a collision.
+Related models share a namespace when one is used; edge references include the
+identity of their endpoint models.
 
 For example, a small task application could define:
 
@@ -101,6 +102,12 @@ directed; outgoing indexes do not imply an incoming index.
 Namespaces organize storage. They are not authorization boundaries and do not
 by themselves place Redis Cluster keys in the same hash slot.
 
+Model names and namespaces are part of storage identity. Renaming a model or
+changing its namespace changes where it reads and writes; existing data is not
+renamed or migrated automatically. Changing index declarations likewise does
+not rebuild existing indexes. Take care when changing these declarations for
+models that already have stored data.
+
 ## Serialization
 
 Record values are serialized as JSON. Standard JSON values include strings,
@@ -115,6 +122,30 @@ a serialization error rather than silently converting to strings.
 Serialization preserves field values; it does not recursively persist related
 nodes. Index encodings are separate from record JSON: an ordered index must
 preserve the field's comparison semantics rather than sort its JSON text.
+
+The built-in indexed field types have deliberately limited rules:
+
+| Field type | Lookup and ordering |
+| --- | --- |
+| `str` | Exact, case-sensitive lookup; Unicode code-point order, without locale collation or normalization. |
+| `bool` | Exact lookup; `False` sorts before `True`. |
+| `int` | Exact lookup and numeric order within the signed 64-bit range. |
+| `float` | Finite IEEE 754 binary64 values in numeric order; negative and positive zero compare equal. NaN and infinities are rejected. |
+| `UUID` | Exact lookup and unsigned 128-bit numeric order. |
+| `datetime` | Timezone-aware values normalized to UTC, with microsecond precision, ordered by instant. Naive datetimes are rejected. |
+
+`None` is stored as JSON null but omitted from indexes. If any field in a
+composite index is `None`, the record has no entry in that index. Multiple
+records may therefore have `None` in an otherwise unique field. Primary-key
+fields cannot be `None`.
+
+JSON arrays and objects can be stored but have no built-in index encoding.
+A custom serialization adapter does not automatically make its type indexable.
+Custom types need a separate, deterministic lookup encoding, and an
+order-preserving encoding for use in `Ordering`. Unsupported index types and
+out-of-range indexed values raise an error before the write is queued or sent.
+Application-specific normalization, such as lowercasing email addresses, belongs
+in application code.
 
 ## Store and retrieve
 
@@ -136,24 +167,52 @@ task.title = "Write the README introduction"
 task.set()
 ```
 
-Constructing or changing a Python object performs no I/O. Persistence is explicit:
+Constructing or changing a Python object performs no I/O. Persistence is explicit.
+The return values below apply outside a transaction; queued operations produce
+their results when the transaction executes.
 
 | Method | Behavior |
 | --- | --- |
 | `Model.get(...)` | Return the matching record, or `None` if absent. |
 | `record.set()` | Insert or replace the record and update its indexes. |
 | `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
-| `record.delete()` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
+| `record.delete()` or `Model.delete(key)` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
 
 A conflicting secondary unique lookup raises `IntegrityError`. It never
 replaces another record.
 
-### Deletion
+### Typed references
+
+Construct a typed reference from a key without fetching the record:
 
 ```python
-deleted = assignment.delete()       # True if the stored edge existed.
-deleted_again = assignment.delete() # False after it has been removed.
+user_ref = User.ref(user.key)
+task_ref = Task.ref(task.key)
+
+assignment = Assignment(source=user_ref, target=task_ref, priority=3)
+assignment.set()
+
+assert assignment.source.key == user.key
+loaded_user = User.get(assignment.source.key)
 ```
+
+A reference exposes identity, not stored field values. Accessing an unloaded
+field raises an error; it never triggers a request. Constructing a reference
+does not check whether the record exists.
+
+### Deletion
+
+Delete through an instance or directly by primary key:
+
+```python
+deleted = Assignment.delete(user.key, task.key)  # True if the edge existed.
+deleted_again = assignment.delete()             # False after removal.
+user_deleted = User.delete(user.key)
+```
+
+The caller does not need to fetch an object first. Index cleanup uses the stored
+record, not possibly stale field values on an instance. For composite node keys,
+pass the key tuple to `Model.delete(key)`.
 
 There are no cascading deletes. Deleting a node leaves its incoming and outgoing
 edges intact. Deleting an edge leaves both endpoint nodes intact. Only index
@@ -218,6 +277,11 @@ Here, `.key` is the composite `(collection, external_id)` identity, with no
 additional UUID identity. Edge models can also declare an alternative primary
 lookup.
 
+Be careful not to change a record's key, fields used in a primary lookup, or
+an edge's endpoints. Identity is not enforced as immutable. A subsequent write
+uses the new identity and can leave the old record and references behind;
+it does not rename or move the stored record.
+
 ## Pages and cursors
 
 ```python
@@ -268,15 +332,33 @@ related writes:
 task = Task(title="Review the README")
 assignment = Assignment(source=user, target=task)
 
-with transaction():
+with transaction() as tx:
     task.set()
     assignment.set()
 ```
 
-Writes join the active transaction. A normal exit commits pending writes; an
-exception escaping the block before commit discards them. Other clients cannot
-observe intermediate steps of a successful commit. Aborting persistence does
-not undo changes to Python objects.
+Transactions follow Redis `MULTI`/`EXEC` semantics. Operations join the active
+transaction and are queued, not executed immediately. A normal exit executes
+them in order; an exception escaping the block before execution discards them.
+Other clients cannot interleave commands during execution. Aborting persistence
+does not undo changes to Python objects.
+
+Queued calls return `None`. After successful execution, `tx.results` contains
+one result per model operation, in call order. In particular, `add()` and
+`delete()` produce their boolean results only after execution:
+
+```python
+with transaction() as tx:
+    Assignment.delete(user.key, task.key)
+
+deleted = tx.results[0]
+```
+
+A queued read cannot supply a value for Python code to branch on inside the
+block. Redis executes it in sequence and returns its result with the other
+results. There is no local read-your-writes cache, automatic conflict detection,
+or automatic retry. Reading before entering the transaction does not protect
+that read from concurrent changes.
 
 **Transactions cannot be nested.** Entering `transaction()` while one is active
 raises `TransactionError`. There are no savepoints. Helpers called inside a
@@ -286,11 +368,14 @@ boundary.
 Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
 hash slot. Transactions across cluster shards are not supported.
 
-Redis `MULTI`/`EXEC` does not undo previously executed commands when another
-command fails during execution. Validation and uniqueness checks must be part
-of the commit protocol; the transaction context alone does not provide rollback
-after execution errors. A lost connection during commit can leave its outcome
-unknown. Persistence and failover durability depend on the Redis deployment.
+Redis `MULTI`/`EXEC` does not roll back previously executed commands when
+another command fails during execution. Other queued commands still execute.
+Each record operation must maintain its own indexes and enforce uniqueness, but
+an error in one operation does not undo other operations in the transaction.
+A raised execution error therefore does not mean that nothing was written.
+
+A lost connection during execution can leave the outcome unknown. Persistence
+and failover durability depend on the Redis deployment.
 
 See [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/)
 and the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
