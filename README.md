@@ -110,8 +110,9 @@ models that already have stored data.
 
 ## Serialization
 
-Record values are serialized as JSON. Standard JSON values include strings,
-numbers, booleans, nulls, arrays, and objects.
+Record values are serialized as JSON, with an automatically managed ETag stored
+alongside the record's fields. Standard JSON values include strings, numbers,
+booleans, nulls, arrays, and objects.
 
 Serialization also supports fields whose Python types are not native JSON
 types, including UUIDs and datetimes. These values use explicit JSON-compatible
@@ -168,18 +169,54 @@ task.set()
 ```
 
 Constructing or changing a Python object performs no I/O. Persistence is explicit.
-The return values below apply outside a transaction; queued operations produce
-their results when the transaction executes.
+The methods below execute immediately. To queue a write in a transaction, call
+its counterpart on the transaction object.
 
 | Method | Behavior |
 | --- | --- |
 | `Model.get(...)` | Return the matching record, or `None` if absent. |
 | `record.set()` | Insert or replace the record and update its indexes. |
+| `record.set(if_not_modified=True)` | Replace the record only if its stored ETag matches the version held by this object; otherwise raise `ConflictError`. |
 | `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
 | `record.delete()` or `Model.delete(key)` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
 
 A conflicting secondary unique lookup raises `IntegrityError`. It never
 replaces another record.
+
+### Conditional updates
+
+Every successful insert or replacement generates a fresh, opaque ETag.
+Fetching a record retains its ETag automatically, available as `record.etag`.
+Changing Python fields does not change the ETag.
+
+Use `if_not_modified=True` to protect a read-modify-write operation:
+
+```python
+task = Task.get(task_key)
+if task is None:
+    raise KeyError(task_key)
+
+task.title = "Updated title"
+task.set(if_not_modified=True)
+```
+
+The write succeeds only if the stored record still has the ETag that was read.
+A mismatch or a record that has since been deleted raises `ConflictError`
+without changing the record or its indexes. The comparison and update execute
+atomically on Redis. A successful write refreshes the object's ETag.
+
+Plain `set()` writes regardless of the previous ETag, subject to validation and
+unique indexes. It also generates a new ETag, even if the field values have not
+changed. ETags are random version tokens rather than content hashes; restoring
+old field values does not restore an old ETag.
+
+Newly constructed objects and key-only references have no ETag until a successful
+write or an explicit fetch provides one. Requesting `if_not_modified=True`
+without an ETag raises an error before sending the write. Use `add()` for
+insert-only behavior.
+
+A conflict does not retry the operation automatically. Fetch the current record
+and decide whether to reapply the change.
 
 ### Typed references
 
@@ -325,58 +362,96 @@ be skipped or seen again.
 
 ## Transactions
 
-Each write maintains its record and indexes together. Use a transaction to group
-related writes:
+Each write maintains its record and indexes together. Use explicit transaction
+methods to group related writes:
 
 ```python
 task = Task(title="Review the README")
 assignment = Assignment(source=user, target=task)
 
 with transaction() as tx:
-    task.set()
-    assignment.set()
+    tx.set(task)
+    tx.set(assignment)
 ```
 
-Transactions follow Redis `MULTI`/`EXEC` semantics. Operations join the active
-transaction and are queued, not executed immediately. A normal exit executes
-them in order; an exception escaping the block before execution discards them.
-Other clients cannot interleave commands during execution. Aborting persistence
-does not undo changes to Python objects.
+Only calls through `tx` participate. Ordinary calls such as `task.set()` or
+`User.delete(key)` execute independently, even inside the context block.
+Pass the transaction object to helpers that need to contribute writes.
 
-Queued calls return `None`. After successful execution, `tx.results` contains
-one result per model operation, in call order. In particular, `add()` and
-`delete()` produce their boolean results only after execution:
+`tx.set(record)`, `tx.add(record)`, and `tx.delete(record)` queue their
+operations. Deletion also accepts a model and primary key, without fetching an
+object first:
 
 ```python
 with transaction() as tx:
-    Assignment.delete(user.key, task.key)
+    tx.delete(Assignment, user.key, task.key)
 
 deleted = tx.results[0]
 ```
 
-A queued read cannot supply a value for Python code to branch on inside the
-block. Redis executes it in sequence and returns its result with the other
-results. There is no local read-your-writes cache, automatic conflict detection,
-or automatic retry. Reading before entering the transaction does not protect
-that read from concurrent changes.
+Queued calls return `None`. A normal context exit commits the queued operations;
+an exception escaping the block before commit discards them. After successful
+execution, `tx.results` contains one result per operation in call order.
+`add()` and `delete()` produce their boolean results at that point.
+
+Queueing a write captures the record's values and, for a conditional write, its
+expected ETag. Later Python mutations do not change the queued operation.
+Successful writes refresh their objects' ETags after commit is confirmed.
+Discarding the transaction does not undo changes to Python objects.
+
+### Conditions apply to the whole transaction
+
+Use `tx.set(record, if_not_modified=True)` to make the transaction conditional
+on a previously read version:
+
+```python
+task = Task.get(task_key)
+if task is None:
+    raise KeyError(task_key)
+
+task.title = "Completed review"
+
+with transaction() as tx:
+    tx.set(task, if_not_modified=True)
+    tx.delete(Assignment, user_key, task_key)
+```
+
+At commit, **all expected ETags are checked before any queued write is applied**.
+If any ETag differs, or a conditionally updated record is missing, commit raises
+`ConflictError` and none of the transaction's writes execute. In this example,
+a conflict leaves both the task and the assignment unchanged by this transaction.
+
+Condition checking and applying the writes form one atomic operation on Redis;
+another client cannot change a checked record between those steps. Every ETag
+condition compares against stored state before the transaction's writes begin.
+Unconditional writes in the same transaction are also withheld if any ETag
+condition fails.
+
+Reads use ordinary model methods and execute immediately. They may occur before
+or inside the block, but are not snapshot reads and do not see queued writes.
+Only versions explicitly supplied through `if_not_modified=True` are checked;
+other reads and query results are not protected. There is no local
+read-your-writes cache or automatic retry.
+
+### Limits
 
 **Transactions cannot be nested.** Entering `transaction()` while one is active
-raises `TransactionError`. There are no savepoints. Helpers called inside a
-transaction perform ordinary writes and let their caller own the transaction
-boundary.
+raises `TransactionError`. There are no savepoints, and the public API does not
+require `watch()` or `multi()` calls.
 
 Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
 hash slot. Transactions across cluster shards are not supported.
 
-Redis `MULTI`/`EXEC` does not roll back previously executed commands when
-another command fails during execution. Other queued commands still execute.
-Each record operation must maintain its own indexes and enforce uniqueness, but
-an error in one operation does not undo other operations in the transaction.
-A raised execution error therefore does not mean that nothing was written.
+ETag conflicts are detected before writes begin. This guarantee does not imply
+general rollback after arbitrary execution errors. Redis does not provide that
+rollback, and a raised execution error must not be taken to mean that nothing
+was written. Individual record operations must still enforce uniqueness and
+maintain their indexes.
 
-A lost connection during execution can leave the outcome unknown. Persistence
-and failover durability depend on the Redis deployment.
+A lost connection during commit can leave the outcome unknown. Persistence and
+failover durability depend on the Redis deployment.
 
-See [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/)
+See [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/),
+[Redis scripting](https://redis.io/docs/latest/develop/programmability/eval-intro/),
 and the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
-for the underlying constraints.
+for the underlying execution constraints.
