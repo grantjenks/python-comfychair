@@ -243,7 +243,7 @@ its counterpart on the transaction object.
 
 | Method | Behavior |
 | --- | --- |
-| `Model.get(...)` | Return the matching record, or `None` if absent. |
+| `Model.get(...)` | Return the matching record; raise `KeyError` if absent unless an explicit `default` is supplied. |
 | `Model.exists(...)` | Return whether a primary key or unique lookup has a matching record. |
 | `record.refresh()` | Replace fields and ETag in place with the stored version; return `None`, or raise `KeyError` if absent. |
 | `Model.get_or_create(...)` | Return `(record, created)`, retrieving a match or inserting a new record. |
@@ -254,6 +254,26 @@ its counterpart on the transaction object.
 
 A conflicting secondary unique lookup raises `IntegrityError`. It never
 replaces another record.
+
+### Missing records and defaults
+
+`get()`, `first()`, and `last()` share one absence policy: omitting
+`default` raises `KeyError` when no record matches. Supplying the keyword-only
+`default` returns that exact value instead.
+
+```python
+task = Task.get(task_key)                # KeyError if absent.
+optional_task = Task.get(task_key, default=None)
+
+missing = object()
+result = User.get(email="alice@example.com", default=missing)
+if result is missing:
+    print("No matching user")
+```
+
+An explicit default applies only to absence. Invalid queries, connection
+failures, validation failures, and decoding errors still raise; they are not
+converted to the default value.
 
 ### Existence and refresh
 
@@ -345,8 +365,6 @@ Use `mode=IF_NOT_MODIFIED` to protect a read-modify-write operation:
 
 ```python
 task = Task.get(task_key)
-if task is None:
-    raise KeyError(task_key)
 
 task.title = "Updated title"
 task.set(mode=IF_NOT_MODIFIED)
@@ -411,8 +429,6 @@ Deletion supports exactly two modes:
 
 ```python
 task = Task.get(task_key)
-if task is None:
-    raise KeyError(task_key)
 
 deleted = task.delete(mode=IF_NOT_MODIFIED)
 ```
@@ -428,7 +444,8 @@ edges intact. Deleting an edge leaves both endpoint nodes intact. Only index
 entries belonging to the deleted record are removed automatically.
 
 Applications explicitly remove any related records they no longer need. An
-edge can therefore refer to a missing node; fetching that node returns `None`.
+edge can therefore refer to a missing node. Fetching that node raises `KeyError`
+unless the caller supplies an explicit default, such as `default=None`.
 
 ## Lookups and orderings
 
@@ -543,7 +560,8 @@ it does not rename or move the stored record.
 
 `first()` and `last()` accept the same source, positional predicates, `order_by`,
 and `reverse` arguments as `page()`, but no limit or cursor. They return one
-record or `None` if the query is empty:
+record, raising `KeyError` if the query is empty unless an explicit `default`
+is supplied:
 
 ```python
 oldest = Assignment.first(
@@ -555,8 +573,13 @@ newest = Assignment.last(
     user,
     Assignment.status == "open",
     order_by=Assignment.created_at,
+    default=None,
 )
 ```
+
+In this example, `oldest` requires a match; the `last()` call returns `None` if
+no match exists. Either method accepts any explicit default, including a custom
+sentinel.
 
 First and last refer to the requested ordering, including `reverse` and the
 primary-key tiebreaker. They access the corresponding end of the index without
@@ -679,8 +702,6 @@ on a previously read version:
 
 ```python
 task = Task.get(task_key)
-if task is None:
-    raise KeyError(task_key)
 
 task.title = "Completed review"
 
