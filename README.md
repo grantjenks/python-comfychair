@@ -92,7 +92,7 @@ for assignment in page:
 ```
 
 An edge stores its endpoint keys. Reading an edge does not fetch either node.
-Every query uses a declared index.
+Every query uses an automatic primary index or a declared ordering.
 
 ## Models and fields
 
@@ -279,7 +279,7 @@ Concurrent calls for the same primary key cannot create duplicate records.
 
 ### Write modes
 
-`set()` accepts a mode controlling whether the write is allowed:
+For an immediate `set()`, the mode controls whether the write is allowed:
 
 | Mode | Behavior |
 | --- | --- |
@@ -305,9 +305,13 @@ A failed mode condition raises `ConflictError` without changing the record or
 its indexes. Every mode still enforces validation.
 Unsupported modes raise `ValueError` before the operation is sent or queued.
 
-`add()` is an insert-only convenience method: it returns `False` when
-the primary key already exists. `set(mode=IF_MISSING)` instead requires the
-insertion to succeed and raises `ConflictError` if that key exists.
+For an immediate write, `add()` returns `False` when the primary key already
+exists; `set(mode=IF_MISSING)` raises `ConflictError` instead.
+
+Inside a `Commit`, modes are preconditions on the stored state before any
+batch writes. They are not rechecked between operations. Once all conditions
+pass, sets insert or replace in call order, while `add()` remains insert-only
+at its position in that order. See [batch conditions](#conditions-apply-to-the-whole-batch).
 
 ### ETags and conditional updates
 
@@ -383,7 +387,7 @@ user_deleted = User.delete(user.key)
 The caller does not need to fetch an object first. Index cleanup uses the stored
 record, not possibly stale field values on an instance.
 
-Deletion supports exactly two modes:
+Immediate deletion supports exactly two modes:
 
 | Mode | Behavior |
 | --- | --- |
@@ -401,6 +405,11 @@ entries atomically. It requires an object carrying an ETag; a model-and-key
 call cannot supply that version and raises `ValueError` if
 used with `IF_NOT_MODIFIED`. `IF_MISSING` and `IF_EXISTS` are unsupported for
 deletion and raise `ValueError`.
+
+In a `Commit`, conditional deletion checks the initial stored ETag along with
+the other batch preconditions. Its result then reflects whether that operation
+actually deleted a record, so it can return `False` if an earlier operation
+in the batch already removed the record.
 
 There are no cascading deletes. Deleting a node leaves its incoming and outgoing
 edges intact. Deleting an edge leaves both endpoint nodes intact. Only index
@@ -425,6 +434,28 @@ the traversal order and may have range bounds.
 Edge indexes are scoped to their source automatically. An
 `Ordering(created_at)` indexes outgoing edges for each source.
 The source does not need to appear in the declaration.
+
+### Automatic edge traversal
+
+Every edge model has a primary index on `(source, target)`. Supplying a source
+supports `page()`, `first()`, `last()`, and `count()` without an `Ordering`
+declaration. Traversal uses ascending target-key order by default; use
+`reverse=True` to reverse it. The target's key type determines its ordering.
+
+```python
+page = Assignment.page(user, limit=20)
+first = Assignment.first(user, default=None)
+last = Assignment.last(user, default=None)
+total = Assignment.count(user)
+```
+
+For edge `page()`, `first()`, and `last()`, omitting `order_by` selects this
+primary traversal. `order_by=Assignment.target` selects it explicitly. Pagination uses the same
+`Page` and cursor rules as declared orderings. A source-only count includes
+every outgoing edge for that model and source.
+
+Filters on other fields must fit a declared `Ordering`, selected with
+`order_by` for traversal. Node traversal requires an explicit ordering.
 
 ### Predicates and ranges
 
@@ -459,7 +490,8 @@ Supported comparisons are:
 `order_by` takes a field descriptor, such as `Task.created_at`. Use
 `reverse=True` for descending traversal.
 
-Every query must fit a declared index. Equality predicates constrain its leading
+Every query must fit an automatic primary index or a declared ordering.
+Equality predicates constrain its leading
 fields; range predicates constrain the next field, which is also the traversal
 field selected by `order_by`. A range can have a lower bound, an upper bound,
 or both, with inclusive or exclusive endpoints. Predicate argument order does
@@ -498,8 +530,9 @@ newest = Assignment.last(
 
 First and last refer to the requested ordering, including `reverse` and the
 primary-key tiebreaker. They access the corresponding end of the index without
-fetching the intervening records. Ordering is explicit; there is no model-level
-default ordering.
+fetching the intervening records. Edge queries without `order_by` use the
+fixed primary order by target; other traversal requires an explicit ordering.
+There is no configurable model-level default ordering.
 
 `count()` returns the number of entries in a supported index scope without
 loading model instances:
@@ -508,9 +541,10 @@ loading model instances:
 open_count = Assignment.count(user, Assignment.status == "open")
 ```
 
-The source and predicates must identify a scope that a declared index can count
-directly, including supported range bounds. An optional `order_by` selects the
-same index used for ordered traversal when needed:
+The source and predicates must identify a scope that an automatic primary
+index or declared ordering can count directly, including supported range
+bounds. An optional `order_by` selects the same index used for ordered
+traversal when needed:
 
 ```python
 open_count = Assignment.count(
@@ -627,7 +661,7 @@ discards them.
 | --- | --- | --- |
 | `batch.set(record)` | `Result[None]` | `None`, matching immediate `set()`. |
 | `batch.add(record)` | `Result[bool]` | `True` if inserted, `False` if the primary key already exists. |
-| `batch.delete(...)` | `Result[bool]` | `True` if deleted, `False` if absent. Conditional deletion requires a match. |
+| `batch.delete(...)` | `Result[bool]` | `True` if deleted at this point in the operation order, `False` if absent. Conditional deletion requires an initial ETag match. |
 
 Results stay attached to their operations and can be returned from helpers:
 
@@ -695,14 +729,16 @@ This includes ETag matches for conditional updates and deletions, absence for
 `ConflictError` and none of the batch's writes execute. In this example,
 a conflict leaves both the task and the assignment unchanged by this batch.
 
-Condition checking and applying the writes form one atomic operation on Redis;
-another client cannot change a checked record between those steps. Mode
-conditions compare against stored state before the batch's writes begin.
-Unconditional writes in the same batch are also withheld if any mode
-condition fails.
+**Conditions gate the batch using its starting state; operation results reflect
+execution order.** Starting state means the stored state immediately before
+the batch's writes, not when the Python context was entered.
 
-An existing primary key for `batch.add()` resolves its result to `False` after
-successful commit and does not cancel the batch. Use
+Condition checking and applying the writes form one atomic operation on Redis;
+another client cannot change a checked record between those steps. Unconditional
+writes in the same batch are also withheld if any mode condition fails.
+
+A primary key present when a `batch.add()` executes produces `False` without
+cancelling the batch. Earlier writes in the batch affect that result. Use
 `batch.set(record, mode=IF_MISSING)` when initial absence is a required
 condition for the batch to proceed.
 
@@ -713,6 +749,25 @@ followed by a delete writes and then removes the record. ETag conditions always
 compare against the stored state before any batch writes. A conditional set
 and delete carrying the same matching ETag therefore both pass their checks;
 the set's new ETag does not invalidate the delete.
+
+Two `set(..., mode=IF_MISSING)` calls for the same initially absent key both
+pass their preconditions. Both sets execute, and the second replaces the first.
+Similarly, two conditional deletes of the same initial version both pass their
+ETag checks, but only the first removes a record:
+
+```python
+task = Task.get(task_key)
+
+with Commit() as batch:
+    first = batch.delete(task, mode=IF_NOT_MODIFIED)
+    second = batch.delete(task, mode=IF_NOT_MODIFIED)
+
+assert first.value is True
+assert second.value is False
+```
+
+A conditional set can also recreate a record deleted earlier in the same
+batch, provided its precondition passed against the initial stored state.
 
 Reads use ordinary model methods and execute immediately. They may occur before
 or inside the block, but are not snapshot reads and do not see queued writes.
@@ -760,8 +815,17 @@ class EmailOwner(Edge[Email, User]):
     pass
 ```
 
-An `EmailOwner` has a string `source` and UUID `target`. Follow an existing
-edge explicitly with `User.get(ownership.target)`.
+An `EmailOwner` has a string `source` and UUID `target`. Find the owner using
+only the email address through automatic source traversal:
+
+```python
+ownership = EmailOwner.first("alice@example.com")
+user = User.get(ownership.target)
+```
+
+No `Ordering` declaration is needed. `first()` raises `KeyError` if no edge
+exists, unless an explicit default is supplied. It selects one edge; the
+application's ownership workflow ensures that there is only one.
 
 ### Concurrent creation
 
