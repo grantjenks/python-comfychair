@@ -41,6 +41,7 @@ For example, a small task application could define:
 from dataclasses import field
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+from typing import Literal
 
 from comfychair import Edge, Lookup, Node, Ordering, transaction
 
@@ -75,7 +76,7 @@ class Task(Node):
 class Assignment(Edge[User, Task]):
     namespace = "example"
 
-    status: str = "open"
+    status: Literal["open", "closed"] = "open"
     priority: int = 0
     created_at: datetime = field(default_factory=now)
 
@@ -107,6 +108,49 @@ changing its namespace changes where it reads and writes; existing data is not
 renamed or migrated automatically. Changing index declarations likewise does
 not rebuild existing indexes. Take care when changing these declarations for
 models that already have stored data.
+
+## Choices and validation
+
+Use `Literal` annotations for a fixed set of choices, as in the `Assignment`
+model's `status` field. Python enum types are also supported: fields hold enum
+members in Python and serialize their underlying values. An enum is indexable
+when its values share a supported index type; ordering follows those values,
+not member declaration order.
+
+Call `record.validate()` to check field types, required values, choices, and
+supported index encodings without accessing Redis. It returns `None` on success
+and raises `ValidationError` on invalid data. Validation does not silently
+coerce values to other types.
+
+Override `validate()` for rules involving multiple fields, and call
+`super().validate()` to retain the built-in checks:
+
+```python
+from comfychair import ValidationError
+
+
+class Reservation(Node):
+    starts_at: datetime
+    ends_at: datetime
+
+    def validate(self):
+        super().validate()
+        if self.ends_at <= self.starts_at:
+            raise ValidationError("ends_at must be later than starts_at")
+```
+
+`set()`, `add()`, and creation through `get_or_create()` validate before
+writing. Transaction writes validate before being queued. Mutating an object's
+fields alone does not trigger validation. Local validation does not establish
+uniqueness, existence, or ETag matches; those checks happen atomically on Redis
+during the operation.
+
+Model definitions are checked at class creation. Invalid declarations raise
+`TypeError`, including unknown index fields, multiple primary indexes,
+unsupported indexed field types, incompatible constant defaults, and stored
+fields that collide with reserved API names. Default factories are checked when
+their values are produced, not invoked during class creation. These checks do
+not inspect existing Redis data or migrate stored records.
 
 ## Serialization
 
@@ -175,6 +219,9 @@ its counterpart on the transaction object.
 | Method | Behavior |
 | --- | --- |
 | `Model.get(...)` | Return the matching record, or `None` if absent. |
+| `Model.exists(...)` | Return whether a primary key or unique lookup has a matching record. |
+| `record.refresh()` | Replace fields and ETag in place with the stored version; return `None`, or raise `KeyError` if absent. |
+| `Model.get_or_create(...)` | Return `(record, created)`, retrieving a match or inserting a new record. |
 | `record.set()` | Insert or replace the record and update its indexes. |
 | `record.set(mode=IF_NOT_MODIFIED)` | Replace the record only if its stored ETag matches the version held by this object; otherwise raise `ConflictError`. |
 | `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
@@ -182,6 +229,54 @@ its counterpart on the transaction object.
 
 A conflicting secondary unique lookup raises `IntegrityError`. It never
 replaces another record.
+
+### Existence and refresh
+
+`exists()` accepts the same primary-key and unique-lookup arguments as `get()`.
+It returns a boolean without loading a model instance:
+
+```python
+has_user = User.exists(user.key)
+has_email = User.exists(email="alice@example.com")
+has_assignment = Assignment.exists(user.key, task.key)
+```
+
+`refresh()` explicitly reloads an existing object:
+
+```python
+task.refresh()
+```
+
+It replaces the object's stored fields and ETag, discarding unsaved edits.
+If the stored record no longer exists, it raises `KeyError` and leaves the
+object unchanged. Refreshing does not load related nodes. Like other reads,
+existence checks and refreshes reflect current storage and do not reserve or
+lock the record for a later write.
+
+### Get or create
+
+Use `get_or_create()` when a record should be retrieved if present and inserted
+otherwise:
+
+```python
+user, created = User.get_or_create(
+    email="alice@example.com",
+    defaults={"name": "Alice"},
+)
+```
+
+Lookup arguments must identify a primary key or a complete declared unique
+`Lookup`. Primary-key arguments follow `get()`, including the two endpoints
+for an edge. `defaults` supplies additional fields only when creating; normal
+field defaults and factories supply the remaining values.
+
+If a match exists, return it with `False` and leave its fields and ETag unchanged.
+Otherwise, validate and insert the new record and return it with `True`.
+The lookup and insertion are coordinated atomically: concurrent calls for the
+same lookup cannot create duplicates. A conflict with a different unique index
+raises `IntegrityError`. Defaults cannot override fields supplied as lookup arguments.
+
+`get_or_create()` executes immediately and is not a queued transaction method.
 
 ### Write modes
 
@@ -371,6 +466,55 @@ an edge's endpoints. Identity is not enforced as immutable. A subsequent write
 uses the new identity and can leave the old record and references behind;
 it does not rename or move the stored record.
 
+### First, last, and count
+
+`first()` and `last()` accept the same source, `where`, `order_by`, and
+`reverse` arguments as `page()`, but no limit or cursor. They return one
+record or `None` if the query is empty:
+
+```python
+oldest = Assignment.first(
+    user,
+    where={"status": "open"},
+    order_by="created_at",
+)
+newest = Assignment.last(
+    user,
+    where={"status": "open"},
+    order_by="created_at",
+)
+```
+
+First and last refer to the requested ordering, including `reverse` and the
+primary-key tiebreaker. They access the corresponding end of the index without
+fetching the intervening records. Ordering is explicit; there is no model-level
+default ordering.
+
+`count()` returns the number of entries in a supported index scope without
+loading model instances:
+
+```python
+open_count = Assignment.count(user, where={"status": "open"})
+```
+
+The source and equality filters must identify a scope that a declared index can
+count directly. An optional `order_by` selects the same index used for ordered
+traversal when needed:
+
+```python
+open_count = Assignment.count(
+    user,
+    where={"status": "open"},
+    order_by="created_at",
+)
+```
+
+An empty scope returns zero. Counts follow index membership, including the
+omission of entries containing `None`. If eligible indexes would count different
+memberships, the query must select an index explicitly. Unsupported scopes raise
+an error; there is no fallback scan or automatically maintained global counter.
+Counts describe current storage and may change before a subsequent page request.
+
 ## Pages and cursors
 
 ```python
@@ -448,7 +592,8 @@ an exception escaping the block before commit discards them. After successful
 execution, `tx.results` contains one result per operation in call order.
 `add()` and `delete()` produce their boolean results at that point.
 
-Queueing a write captures its mode, the record's values, and any expected ETag. Later Python mutations do not change the queued operation.
+Queueing a write captures its mode, the record's values, and any expected ETag.
+Later Python mutations do not change the queued operation.
 Successful writes refresh their objects' ETags after commit is confirmed.
 Discarding the transaction does not undo changes to Python objects.
 
@@ -500,8 +645,8 @@ require `watch()` or `multi()` calls.
 Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
 hash slot. Transactions across cluster shards are not supported.
 
-Mode-condition conflicts are detected before writes begin. This guarantee does not imply
-general rollback after arbitrary execution errors. Redis does not provide that
+Mode-condition conflicts are detected before writes begin. This guarantee does
+not imply general rollback after arbitrary execution errors. Redis does not provide that
 rollback, and a raised execution error must not be taken to mean that nothing
 was written. Individual record operations must still enforce uniqueness and
 maintain their indexes.
