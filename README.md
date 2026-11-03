@@ -11,8 +11,9 @@ metadata. Type annotations define fields. Explicit indexes provide unique
 lookups and ordered traversal. Namespaces keep independent collections of data
 separate.
 
-The interface centers on five concepts:
+The interface centers on six concepts:
 
+- **Field:** a stored value on an instance and a query descriptor on its class.
 - **Node:** a record identified by a key, with a generated UUID by default.
 - **Edge:** a directed relationship identified by its source and target keys.
 - **Lookup:** a unique index for exact matches.
@@ -26,7 +27,8 @@ Redis connection.
 ## Models and namespaces
 
 Declare stored fields with Python type annotations. Constructors accept keyword
-arguments, and defaults use dataclass-style declarations.
+arguments. Use `Field` for defaults, factories, and fields referenced in index
+declarations.
 
 A model's optional `namespace` separates its records and indexes from those in
 other namespaces. Omit it to use no namespace; there is no implicit namespace
@@ -38,12 +40,11 @@ identity of their endpoint models.
 For example, a small task application could define:
 
 ```python
-from dataclasses import field
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 from typing import Literal
 
-from comfychair import Edge, Lookup, Node, Ordering, transaction
+from comfychair import Edge, Field, Lookup, Node, Ordering, transaction
 
 
 def now():
@@ -53,12 +54,12 @@ def now():
 class User(Node):
     namespace = "example"
 
-    key: UUID = field(default_factory=uuid4)
+    key: UUID = Field(default_factory=uuid4)
     name: str
-    email: str
+    email: str = Field()
 
     indexes = (
-        Lookup("email"),
+        Lookup(email),
     )
 
 
@@ -66,25 +67,48 @@ class Task(Node):
     namespace = "example"
 
     title: str
-    created_at: datetime = field(default_factory=now)
+    created_at: datetime = Field(default_factory=now)
 
     indexes = (
-        Ordering("created_at"),
+        Ordering(created_at),
     )
 
 
 class Assignment(Edge[User, Task]):
     namespace = "example"
 
-    status: Literal["open", "closed"] = "open"
-    priority: int = 0
-    created_at: datetime = field(default_factory=now)
+    status: Literal["open", "closed"] = Field(default="open")
+    priority: int = Field(default=0)
+    created_at: datetime = Field(default_factory=now)
 
     indexes = (
-        Ordering("created_at"),
-        Ordering("priority"),
-        Ordering("status", "created_at"),
+        Ordering(created_at),
+        Ordering(priority),
+        Ordering(status, created_at),
     )
+```
+
+The annotation supplies the value type; `Field` supplies configuration and
+query behavior. `Field()` without a default declares a required value. There
+is no need to repeat the type as `Field[str]()`.
+
+Plain annotations and ordinary defaults remain shorthand:
+
+```python
+class Note(Node):
+    title: str
+    priority: int = 0
+```
+
+Comfy Chair creates descriptors for these fields during class creation. Use an
+explicit `Field()` when configuring a field or referencing it within the class
+body, as in `Lookup(email)`. On an instance, field access returns the stored
+Python value; on a class, it returns the descriptor:
+
+```python
+Task.created_at                  # Field descriptor
+task.created_at                  # datetime value on a Task instance
+Task.created_at >= start         # Query predicate
 ```
 
 `Node` supplies a `key: UUID` field with a generated UUID by default. The
@@ -146,7 +170,8 @@ uniqueness, existence, or ETag matches; those checks happen atomically on Redis
 during the operation.
 
 Model definitions are checked at class creation. Invalid declarations raise
-`TypeError`, including unknown index fields, multiple primary indexes,
+`TypeError`, including index fields that do not belong to the model, multiple
+primary indexes,
 unsupported indexed field types, incompatible constant defaults, and stored
 fields that collide with reserved API names. Default factories are checked when
 their values are produced, not invoked during class creation. These checks do
@@ -411,23 +436,71 @@ edge can therefore refer to a missing node; fetching that node returns `None`.
 composite lookup must be supplied. It returns at most one record and provides no
 ordered traversal.
 
-`Ordering` supports traversal with duplicate values. Equality filters match
-leading fields in the declaration; the following field supplies the ordering.
+`Lookup` and `Ordering` declarations take field descriptors, not field-name
+strings. `Ordering` supports traversal with duplicate values. Equality
+predicates match leading fields in the declaration; the following field supplies
+the traversal order and may have range bounds.
 
 | Declaration | Example access |
 | --- | --- |
-| `Lookup("email")` | `User.get(email="alice@example.com")` |
-| `Ordering("created_at")` | `Task.page(order_by="created_at", limit=20)` |
-| `Ordering("priority")` on an edge | `Assignment.page(user, order_by="priority", reverse=True, limit=20)` |
-| `Ordering("status", "created_at")` on an edge | `Assignment.page(user, where={"status": "open"}, order_by="created_at", reverse=True, limit=20)` |
+| `Lookup(email)` | `User.get(email="alice@example.com")` |
+| `Ordering(created_at)` | `Task.page(order_by=Task.created_at, limit=20)` |
+| `Ordering(priority)` on an edge | `Assignment.page(user, order_by=Assignment.priority, reverse=True, limit=20)` |
+| `Ordering(status, created_at)` on an edge | `Assignment.page(user, Assignment.status == "open", order_by=Assignment.created_at, reverse=True, limit=20)` |
 
 Edge indexes are scoped to their source automatically. An
-`Ordering("created_at")` indexes outgoing edges for each source.
-A `Lookup("external_id")` on an edge makes that field unique within each source's
-outgoing edges. The source does not need to appear in either declaration.
+`Ordering(created_at)` indexes outgoing edges for each source.
+A `Lookup` on an edge's `external_id` field makes that field unique within each
+source's outgoing edges. The source does not need to appear in either declaration.
 
-Queries must match a declared index. Unsupported filters or orderings raise an
-error instead of scanning the data.
+### Predicates and ranges
+
+Pass filters as positional predicates. Multiple predicates mean AND:
+
+```python
+start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+end = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+page = Assignment.page(
+    user,
+    Assignment.status == "open",
+    Assignment.created_at >= start,
+    Assignment.created_at < end,
+    order_by=Assignment.created_at,
+    reverse=True,
+    limit=20,
+)
+```
+
+Supported comparisons are:
+
+| Expression | Meaning |
+| --- | --- |
+| `field == value` | Exact match |
+| `field > value` | Exclusive lower bound |
+| `field >= value` | Inclusive lower bound |
+| `field < value` | Exclusive upper bound |
+| `field <= value` | Inclusive upper bound |
+
+`page()`, `first()`, `last()`, and `count()` accept positional predicates.
+`order_by` takes a field descriptor, such as `Task.created_at`. Use
+`reverse=True` for descending traversal.
+
+Every query must fit a declared index. Equality predicates constrain its leading
+fields; range predicates constrain the next field, which is also the traversal
+field selected by `order_by`. A range can have a lower bound, an upper bound,
+or both, with inclusive or exclusive endpoints. Predicate argument order does
+not matter.
+
+Unsupported queries raise an error. There are no implicit scans, Python-side
+filtering, or index intersections. Inequality (`!=`), OR, field-to-field
+comparisons, and arithmetic expressions are not supported.
+
+Predicate objects raise `TypeError` when converted to a boolean. Supply separate
+positional predicates instead of using Python `and`, `or`, or a chained
+comparison such as `start <= Assignment.created_at < end`. Comparisons between
+ordinary instance values, such as `reservation.starts_at < reservation.ends_at`,
+remain normal Python comparisons.
 
 ### Primary keys
 
@@ -438,12 +511,12 @@ one on their source and target. An explicit primary lookup replaces the default:
 class Document(Node):
     namespace = "archive"
 
-    collection: str
-    external_id: str
+    collection: str = Field()
+    external_id: str = Field()
     title: str
 
     indexes = (
-        Lookup("collection", "external_id", primary=True),
+        Lookup(collection, external_id, primary=True),
     )
 
 
@@ -468,20 +541,20 @@ it does not rename or move the stored record.
 
 ### First, last, and count
 
-`first()` and `last()` accept the same source, `where`, `order_by`, and
-`reverse` arguments as `page()`, but no limit or cursor. They return one
+`first()` and `last()` accept the same source, positional predicates, `order_by`,
+and `reverse` arguments as `page()`, but no limit or cursor. They return one
 record or `None` if the query is empty:
 
 ```python
 oldest = Assignment.first(
     user,
-    where={"status": "open"},
-    order_by="created_at",
+    Assignment.status == "open",
+    order_by=Assignment.created_at,
 )
 newest = Assignment.last(
     user,
-    where={"status": "open"},
-    order_by="created_at",
+    Assignment.status == "open",
+    order_by=Assignment.created_at,
 )
 ```
 
@@ -494,18 +567,18 @@ default ordering.
 loading model instances:
 
 ```python
-open_count = Assignment.count(user, where={"status": "open"})
+open_count = Assignment.count(user, Assignment.status == "open")
 ```
 
-The source and equality filters must identify a scope that a declared index can
-count directly. An optional `order_by` selects the same index used for ordered
+The source and predicates must identify a scope that a declared index can count
+directly, including supported range bounds. An optional `order_by` selects the same index used for ordered
 traversal when needed:
 
 ```python
 open_count = Assignment.count(
     user,
-    where={"status": "open"},
-    order_by="created_at",
+    Assignment.status == "open",
+    order_by=Assignment.created_at,
 )
 ```
 
@@ -520,8 +593,8 @@ Counts describe current storage and may change before a subsequent page request.
 ```python
 page = Assignment.page(
     user,
-    where={"status": "open"},
-    order_by="created_at",
+    Assignment.status == "open",
+    order_by=Assignment.created_at,
     reverse=True,
     limit=20,
 )
@@ -532,8 +605,8 @@ for assignment in page:
 if page.cursor is not None:
     next_page = Assignment.page(
         user,
-        where={"status": "open"},
-        order_by="created_at",
+        Assignment.status == "open",
+        order_by=Assignment.created_at,
         reverse=True,
         limit=20,
         cursor=page.cursor,
@@ -546,8 +619,10 @@ the number of records in this page, not the total number of matches.
 
 `page.cursor` is an opaque, serializable continuation token, or `None` when the
 query is exhausted. Pass it back with the same namespace, model, source, filters,
-ordering, and direction. Omitting the cursor starts at the beginning. A cursor
-cannot be reused for a different query or an incompatible index definition.
+ordering, and direction. Equivalent predicates identify the same query even
+when reconstructed as new Python objects or supplied in a different argument
+order. Omitting the cursor starts at the beginning. A cursor cannot be reused
+for a different query or an incompatible index definition.
 
 Pagination continues exclusively after the last ordering value and primary-key
 tiebreaker. Equal timestamps or priorities therefore have a deterministic order.
