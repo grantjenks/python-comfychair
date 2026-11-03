@@ -458,7 +458,7 @@ last_edge = Assignment.last(user, default=None)
 edge_count = Assignment.count(user)
 ```
 
-For `page()`, `first()`, and `last()`, omitting `order_by` selects the
+For `page()`, `iterate()`, `first()`, and `last()`, omitting `order_by` selects the
 primary traversal. Use `order_by=User.key` or
 `order_by=Assignment.target` to select it explicitly, and `reverse=True`
 for descending traversal. `first()` and `last()` use the normal missing-record
@@ -506,7 +506,8 @@ Supported comparisons are:
 | `field < value` | Exclusive upper bound |
 | `field <= value` | Inclusive upper bound |
 
-`page()`, `first()`, `last()`, and `count()` accept positional predicates.
+`page()`, `iterate()`, `first()`, `last()`, and `count()` accept positional
+predicates.
 `order_by` takes a field descriptor, such as `Task.created_at`. Use
 `reverse=True` for descending traversal.
 
@@ -668,6 +669,41 @@ Pages read live data, not a snapshot. Inserts and deletes may change later pages
 In primary traversal, a new key before the cursor will not appear later in that
 traversal; one after it may appear. Changing an ordering or filtering field
 between requests can cause a record to be skipped or seen again.
+
+### Automatic iteration
+
+Use `iterate()` to yield individual records and follow page cursors automatically:
+
+```python
+for user in User.iterate(batch_size=100):
+    print(user.key, user.name)
+```
+
+It accepts the same source, predicates, `order_by`, `reverse`, and optional
+starting `cursor` as `page()`. The `batch_size` parameter replaces `limit`
+and must be a positive integer. It controls records fetched per request, not
+the total number yielded.
+
+```python
+for assignment in Assignment.iterate(
+    user,
+    Assignment.status == "open",
+    order_by=Assignment.created_at,
+    reverse=True,
+    batch_size=100,
+):
+    print(assignment.target, assignment.priority)
+```
+
+`iterate()` returns a lazy iterator. The first fetch happens when iteration
+begins; subsequent pages are fetched as needed until the cursor is exhausted.
+An empty query yields no records. Stopping iteration makes no further requests,
+though records from the current page may already have been fetched. The iterator
+does not compute a total count or materialize the full result set.
+
+Iteration uses the same ordering, filtering, and live-data semantics as
+`page()`; it does not provide a snapshot. Use `page()` directly when the caller
+needs page boundaries or continuation cursors.
 
 ## Commits
 
