@@ -7,9 +7,9 @@
 Typed nodes, edges, and indexes for Python, backed by Redis.
 
 Comfy Chair stores records by key and relationships as records with their own
-metadata. Type annotations define fields. Primary keys identify records;
-explicit indexes provide ordered traversal. Namespaces keep independent
-collections of data separate.
+metadata. Type annotations define fields. Primary indexes provide lookup and
+ordered traversal; declared orderings support queries on other fields.
+Namespaces keep independent collections of data separate.
 
 Edges are records too: they store source and target keys along with fields such
 as a role, status, or priority. Their indexes support queries over one source's
@@ -134,7 +134,7 @@ class Account(Node):
     name: str
 ```
 
-Primary lookup by key is automatic.
+Primary lookup and ordered traversal by key are automatic.
 
 `Edge[User, Task]` supplies `source` and `target` fields whose value types
 come from the endpoint models' primary keys. Both are UUIDs in this example.
@@ -435,27 +435,47 @@ Edge indexes are scoped to their source automatically. An
 `Ordering(created_at)` indexes outgoing edges for each source.
 The source does not need to appear in the declaration.
 
-### Automatic edge traversal
+### Automatic primary traversal
 
-Every edge model has a primary index on `(source, target)`. Supplying a source
-supports `page()`, `first()`, `last()`, and `count()` without an `Ordering`
-declaration. Traversal uses ascending target-key order by default; use
-`reverse=True` to reverse it. The target's key type determines its ordering.
+Every node model has an ordered primary index on `key`; every edge model has
+one on `(source, target)`. Record writes and deletes maintain these indexes
+alongside the records. No `Ordering` declaration is required.
+
+| Model | Scope | Ascending order |
+| --- | --- | --- |
+| Node | All records of the model and namespace | Primary key |
+| Edge | All outgoing edges of the model for one source | Target key |
 
 ```python
-page = Assignment.page(user, limit=20)
-first = Assignment.first(user, default=None)
-last = Assignment.last(user, default=None)
-total = Assignment.count(user)
+page = User.page(limit=100)
+first = User.first()
+last = User.last()
+total = User.count()
+
+outgoing = Assignment.page(user, limit=20)
+first_edge = Assignment.first(user, default=None)
+last_edge = Assignment.last(user, default=None)
+edge_count = Assignment.count(user)
 ```
 
-For edge `page()`, `first()`, and `last()`, omitting `order_by` selects this
-primary traversal. `order_by=Assignment.target` selects it explicitly. Pagination uses the same
-`Page` and cursor rules as declared orderings. A source-only count includes
-every outgoing edge for that model and source.
+For `page()`, `first()`, and `last()`, omitting `order_by` selects the
+primary traversal. Use `order_by=User.key` or
+`order_by=Assignment.target` to select it explicitly, and `reverse=True`
+for descending traversal. `first()` and `last()` use the normal missing-record
+policy, raising `KeyError` on an empty scope unless a default is supplied.
 
+The key type determines ordering: UUIDs use unsigned numeric order and strings
+use Unicode code-point order. UUID order is deterministic but does not indicate
+creation time.
+
+A node's primary index includes every stored record, so `User.count()` counts
+all users of that model and namespace. A source-only edge count includes every
+outgoing edge for that model and source. Counts use index membership without
+loading model instances.
+
+Primary traversal uses the same `Page` and cursor rules as declared orderings.
 Filters on other fields must fit a declared `Ordering`, selected with
-`order_by` for traversal. Node traversal requires an explicit ordering.
+`order_by` for traversal.
 
 ### Predicates and ranges
 
@@ -530,9 +550,9 @@ newest = Assignment.last(
 
 First and last refer to the requested ordering, including `reverse` and the
 primary-key tiebreaker. They access the corresponding end of the index without
-fetching the intervening records. Edge queries without `order_by` use the
-fixed primary order by target; other traversal requires an explicit ordering.
-There is no configurable model-level default ordering.
+fetching the intervening records. Without `order_by`, nodes use primary-key
+order and edges use target-key order within the source. Other traversal requires
+an explicit ordering; there is no configurable model-level default ordering.
 
 `count()` returns the number of entries in a supported index scope without
 loading model instances:
@@ -554,10 +574,10 @@ open_count = Assignment.count(
 )
 ```
 
-An empty scope returns zero. Counts follow index membership, including the
-omission of entries containing `None`. If eligible indexes would count different
-memberships, the query must select an index explicitly. Unsupported scopes raise
-an error; there is no fallback scan or automatically maintained global counter.
+An empty scope returns zero. Counts follow index membership. Primary indexes
+include every record in their scope; secondary orderings omit entries
+containing `None`. If eligible indexes would count different memberships, the query must select an index explicitly. Unsupported scopes raise
+an error; there is no fallback scan.
 Counts describe current storage and may change before a subsequent page request.
 
 ### Indexed values
@@ -586,6 +606,23 @@ Application-specific normalization, such as lowercasing email addresses, belongs
 in application code.
 
 ## Pages and cursors
+
+Iterate all users in primary-key order:
+
+```python
+page = User.page(limit=100)
+
+while True:
+    for user in page:
+        print(user.key, user.name)
+
+    if page.cursor is None:
+        break
+
+    page = User.page(limit=100, cursor=page.cursor)
+```
+
+The same pagination API applies to declared orderings:
 
 ```python
 page = Assignment.page(
@@ -621,12 +658,16 @@ when reconstructed as new Python objects or supplied in a different argument
 order. Omitting the cursor starts at the beginning. A cursor cannot be reused
 for a different query or an incompatible index definition.
 
-Pagination continues exclusively after the last ordering value and primary-key
-tiebreaker. Equal timestamps or priorities therefore have a deterministic order.
+Primary traversal continues exclusively after the last primary key for nodes,
+or the last target key within the source for edges. Declared orderings continue
+after the last ordering value and primary-key tiebreaker. Equal timestamps or
+priorities therefore have a deterministic order. Pagination requires no offsets
+or full scans.
 
 Pages read live data, not a snapshot. Inserts and deletes may change later pages.
-Changing an ordering or filtering field between requests can cause a record to
-be skipped or seen again.
+In primary traversal, a new key before the cursor will not appear later in that
+traversal; one after it may appear. Changing an ordering or filtering field
+between requests can cause a record to be skipped or seen again.
 
 ## Commits
 
