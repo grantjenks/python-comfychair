@@ -27,7 +27,7 @@ Define nodes and a typed relationship between them:
 from datetime import datetime, timezone
 from typing import Literal
 
-from comfychair import Commit, Edge, Field, Node, Ordering, Ref
+from comfychair import Commit, Edge, Field, Node, Ordering
 
 
 def now():
@@ -36,7 +36,6 @@ def now():
 
 class User(Node):
     name: str
-    email: str
 
 
 class Task(Node):
@@ -63,7 +62,7 @@ class Assignment(Edge[User, Task]):
 Create records and store related writes together:
 
 ```python
-user = User(name="Alice", email="alice@example.com")
+user = User(name="Alice")
 task = Task(title="Write the introduction")
 assignment = Assignment(source=user, target=task, priority=3)
 
@@ -92,8 +91,8 @@ for assignment in page:
     print(assignment.target, assignment.priority)
 ```
 
-An edge carries typed references to its endpoints. Reading an edge does not
-fetch either node. Every query uses a declared index.
+An edge stores its endpoint keys. Reading an edge does not fetch either node.
+Every query uses a declared index.
 
 ## Models and fields
 
@@ -137,14 +136,16 @@ class Account(Node):
 
 Primary lookup by key is automatic.
 
-`Edge[User, Task]` supplies `source: Ref[User]` and `target: Ref[Task]`
-endpoints. Its key consists of the source and target primary keys, scoped to
-the edge model and namespace. There is one edge per endpoint pair for a given edge model. Different edge models can
-connect the same pair independently.
+`Edge[User, Task]` supplies `source` and `target` fields whose value types
+come from the endpoint models' primary keys. Both are UUIDs in this example.
+An edge's `key` is the pair `(source, target)`, scoped to its model and
+namespace. There is one edge per endpoint pair for a given edge model.
+Different edge models can connect the same pair independently.
 
-Edges store endpoint references and their own fields, not copies of endpoint
-records. Fetching an edge does not fetch either endpoint. Relationships are
-directed; outgoing indexes do not imply an incoming index.
+Edges store endpoint keys and their own fields, not copies of endpoint
+records. The generic parameters identify the endpoint models. Fetching an
+edge does not fetch either node. Relationships are directed; outgoing indexes
+do not imply an incoming index.
 
 ### Primary keys
 
@@ -169,7 +170,7 @@ be `None`.
 
 Be careful not to change a record's key or an edge's endpoints. Identity is not
 enforced as immutable. A subsequent write uses the new identity and can leave
-the old record and references behind; it does not rename or move the stored
+the old record and edges behind; it does not rename or move the stored
 record.
 
 ### Namespaces and storage identity
@@ -186,9 +187,9 @@ Namespaces let separate packages define models with the same class name in one
 Redis database without collisions. Omit the attribute to use no namespace
 prefix. Model name and namespace together distinguish record types.
 
-Edges may connect models in different namespaces. Endpoint references retain
-the identity of their models. A namespace is a naming prefix, not an
-authorization boundary or a Redis Cluster hash-slot assignment.
+Edges may connect models in different namespaces. The edge declaration
+identifies each endpoint model and its namespace. A namespace is a naming
+prefix, not an authorization boundary or a Redis Cluster hash-slot assignment.
 
 Model names and namespaces are part of storage identity. Renaming a model or
 changing its namespace changes where it reads and writes; existing data is not
@@ -234,12 +235,11 @@ converted to the default value.
 
 ### Existence and refresh
 
-`exists()` accepts the same primary keys or typed references as `get()`.
+`exists()` accepts the same primary-key arguments as `get()`.
 It returns a boolean without loading a model instance:
 
 ```python
 has_user = User.exists(user.key)
-has_reference = User.exists(User.ref(user.key))
 has_assignment = Assignment.exists(user.key, task.key)
 ```
 
@@ -266,8 +266,8 @@ task, created = Task.get_or_create(
 )
 ```
 
-Identity arguments follow `get()`, including typed references and the two
-endpoints for an edge. `defaults` supplies fields only when creating; normal
+Identity arguments follow `get()`, including the two endpoints for an edge.
+`defaults` supplies fields only when creating; normal
 field defaults and factories supply the remaining values. Defaults cannot
 override the supplied identity, and `None` is not a valid primary key.
 
@@ -330,82 +330,45 @@ without changing the record or its indexes. The comparison and update execute
 atomically on Redis. A successful write refreshes the object's ETag.
 
 Plain `set()` writes regardless of the previous ETag, subject to validation.
-It also generates a new ETag, even if the field values have not changed. ETags are random version tokens rather than content hashes; restoring
+It also generates a new ETag, even if the field values have not changed.
+ETags are random version tokens rather than content hashes; restoring
 old field values does not restore an old ETag.
 
 Newly constructed records have no ETag until a successful write provides one;
-fetched records carry the stored ETag. References carry identity only and never
-have an ETag. Requesting `mode=IF_NOT_MODIFIED` without a record ETag raises
+fetched records carry the stored ETag. Primary-key values do not carry ETags.
+Requesting `mode=IF_NOT_MODIFIED` without a record ETag raises
 `ValueError` before writing. For queued operations, the record's ETag is read
 and checked when the context exits.
 
 A conflict does not retry the operation automatically. Fetch the current record
 and decide whether to reapply the change.
 
-### Typed references and alternate identities
+### Edge endpoints
 
-`Ref[User]` is a typed identifier for a user. It carries the model identity and
-primary key, without user fields, an ETag, or implicit fetching. Construct one
-with `User.ref(key)`; this performs no I/O and does not check existence.
-
-Declare reference fields explicitly:
+Model relationships are stored as edges. Their `source` and `target` attributes
+are ordinary primary-key values, used directly with model methods:
 
 ```python
-class EmailOwner(Node):
-    key: str
-    user_ref: Ref[User]
-
-
-ownership = EmailOwner(
-    key="alice@example.com",
-    user_ref=User.ref(user.key),
-)
-inserted = ownership.add()  # False if that email key already exists.
-
-ownership = EmailOwner.get("alice@example.com")
-loaded_user = User.get(ownership.user_ref)
-```
-
-A reference is used directly as an identifier, with no `.key` step. Methods
-accepting a primary key, including `get()`, `exists()`, and `delete()`, also
-accept a reference to the appropriate model. A reference to a different model
-is rejected.
-
-A `Ref[User]` field requires a reference, not a full `User` object. A bare
-model annotation does not implicitly declare a reference or embed a model.
-The name `user_ref` is an application choice that makes the field's purpose
-clear.
-
-Uniqueness comes from primary keys. An `EmailOwner` node uses the email itself
-as its identity; its user reference is an ordinary stored field. Change ownership
-with a conditional write:
-
-```python
-ownership.user_ref = User.ref(another_user.key)
-ownership.set(mode=IF_NOT_MODIFIED)
-```
-
-Applications maintain these alternate-identity nodes explicitly, including any
-consistency with duplicated fields such as `User.email`. Ordered indexes do
-not enforce uniqueness.
-
-Edge endpoints follow the same reference semantics:
-
-```python
-user_ref = User.ref(user.key)
-task_ref = Task.ref(task.key)
-
-assignment = Assignment(source=user_ref, target=task_ref, priority=3)
+assignment = Assignment(source=user.key, target=task.key, priority=3)
 assignment.set()
 
 loaded_user = User.get(assignment.source)
 loaded_task = Task.get(assignment.target)
 ```
 
-`Edge[User, Task]` identifies the endpoint models. Its constructor also accepts
-instances of those models as endpoint shorthand; its `source` and `target`
-attributes hold references. References and edges never copy or fetch endpoint
-records.
+An edge constructor also accepts instances of the declared endpoint models
+as shorthand and extracts their keys:
+
+```python
+assignment = Assignment(source=user, target=task)
+assert assignment.source == user.key
+assert assignment.target == task.key
+```
+
+Edge methods accept endpoint keys or the corresponding model instances;
+source-scoped queries accept either form for the source. Passing a key never
+fetches the endpoint or checks its existence. There are no reference wrappers,
+embedded model fields, or implicit fetches.
 
 ### Deletion
 
@@ -418,8 +381,7 @@ user_deleted = User.delete(user.key)
 ```
 
 The caller does not need to fetch an object first. Index cleanup uses the stored
-record, not possibly stale field values on an instance. Typed references can
-be passed directly wherever these calls accept a primary key.
+record, not possibly stale field values on an instance.
 
 Deletion supports exactly two modes:
 
@@ -435,8 +397,8 @@ deleted = task.delete(mode=IF_NOT_MODIFIED)
 ```
 
 Conditional deletion compares the ETag and removes the record and its index
-entries atomically. It requires an object carrying an ETag; a key-only reference
-or model-and-key call cannot supply that version and raises `ValueError` if
+entries atomically. It requires an object carrying an ETag; a model-and-key
+call cannot supply that version and raises `ValueError` if
 used with `IF_NOT_MODIFIED`. `IF_MISSING` and `IF_EXISTS` are unsupported for
 deletion and raise `ValueError`.
 
@@ -450,7 +412,8 @@ edge can therefore refer to a missing node.
 ## Ordered indexes
 
 `Ordering` declarations take field descriptors, not field-name strings.
-`Ordering` supports traversal with duplicate values. Equality predicates match leading fields in the declaration; the following field supplies
+`Ordering` supports traversal with duplicate values. Equality predicates match
+leading fields in the declaration; the following field supplies
 the traversal order and may have range bounds.
 
 | Declaration | Example access |
@@ -778,6 +741,83 @@ See [Redis transactions](https://redis.io/docs/latest/develop/using-commands/tra
 and the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
 for the underlying execution constraints.
 
+## Relationships and exclusive ownership
+
+Edges identify pairs, so several targets can share one source. A rule such as
+one owner per email is maintained by application workflows, not enforced by
+the edge type or an ordered index.
+
+Use an email node as the claim on an address and an edge for its owner.
+The `User` model from the example stores a name, with no duplicated email
+field or embedded relationship:
+
+```python
+class Email(Node):
+    key: str
+
+
+class EmailOwner(Edge[Email, User]):
+    pass
+```
+
+An `EmailOwner` has a string `source` and UUID `target`. Follow an existing
+edge explicitly with `User.get(ownership.target)`.
+
+### Concurrent creation
+
+Create the email claim, user, and edge together. Addresses in this example
+have already been normalized according to the application's rules.
+
+```python
+def create_user(name, address):
+    user = User(name=name)
+    email = Email(key=address)
+    ownership = EmailOwner(source=email, target=user)
+
+    with Commit() as batch:
+        batch.set(email, mode=IF_MISSING)
+        batch.set(user, mode=IF_MISSING)
+        batch.set(ownership, mode=IF_MISSING)
+
+    return user
+```
+
+Concurrent requests for the same address contend on the same `Email` key.
+One commit succeeds; another finds the email claim present and raises
+`ConflictError` before any of its writes. The losing request creates no user
+or edge. Use `set(mode=IF_MISSING)` for this requirement: a failed `add()`
+would produce `False` without cancelling the other writes.
+
+This workflow reserves the address. Creating additional edges directly would
+bypass the one-owner rule. Deleting an ownership edge alone does not release
+the email claim; applications manage that lifecycle explicitly.
+
+### Swapping owners
+
+Given two distinct addresses and users with consistent existing ownership,
+replace the two edges. Neither email nor user node changes:
+
+```python
+def swap_emails(email_a_key, user_a_key, email_b_key, user_b_key):
+    old_a = EmailOwner.get(email_a_key, user_a_key)
+    old_b = EmailOwner.get(email_b_key, user_b_key)
+
+    new_a = EmailOwner(source=email_a_key, target=user_b_key)
+    new_b = EmailOwner(source=email_b_key, target=user_a_key)
+
+    with Commit() as batch:
+        batch.delete(old_a, mode=IF_NOT_MODIFIED)
+        batch.delete(old_b, mode=IF_NOT_MODIFIED)
+        batch.set(new_a, mode=IF_MISSING)
+        batch.set(new_b, mode=IF_MISSING)
+```
+
+The old edges' ETags must still match, and the new edges must be absent.
+All four conditions are checked before any writes; a conflict leaves the
+stored relationships unchanged by this batch. Ownership-changing workflows
+must preserve the one-owner rule. These examples have the same Redis primary
+or Cluster hash-slot requirement as other commits.
+
 ## Choices and validation
 
 Use `Literal` annotations for a fixed set of choices, as in the `Assignment`
@@ -833,7 +873,8 @@ encodings and are restored to their declared Python types when read. Custom
 field types can supply encoding and decoding adapters. Unsupported values raise
 a serialization error rather than silently converting to strings.
 
-References serialize the referenced model identity and primary key and are
-restored as typed identifiers. Serialization does not embed or recursively
+Edges serialize their source and target primary-key values using the types
+specified by their endpoint models. Serialization does not embed or recursively
 persist related nodes. Index encodings are separate from record JSON: an
-ordered index must preserve the field's comparison semantics rather than sort its JSON text.
+ordered index must preserve the field's comparison semantics rather than sort
+its JSON text.
