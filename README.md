@@ -682,15 +682,47 @@ key, without fetching an object first:
 
 ```python
 with Commit() as batch:
-    batch.delete(Assignment, user.key, task.key)
+    removed = batch.delete(Assignment, user.key, task.key)
 
-deleted = batch.results[0]
+if removed.value:
+    print("Assignment removed")
 ```
 
-Queued calls return `None`. A normal context exit commits the queued operations;
-an exception escaping the block before commit discards them. After successful
-execution, `batch.results` contains one result per operation in call order.
-`add()` and `delete()` produce their boolean results at that point.
+Each queued call returns a `Result[T]` handle. Its `.value` becomes available
+only after the whole commit succeeds and is confirmed. A normal context exit
+commits the queued operations; an exception escaping the block before commit
+discards them.
+
+| Queued method | Handle | Value after successful commit |
+| --- | --- | --- |
+| `batch.set(record)` | `Result[None]` | `None`, matching immediate `set()`. |
+| `batch.add(record)` | `Result[bool]` | `True` if inserted, `False` if the primary key already exists. |
+| `batch.delete(...)` | `Result[bool]` | `True` if deleted, `False` if absent. Conditional deletion requires a match. |
+
+Results stay attached to their operations and can be returned from helpers:
+
+```python
+def remove_assignment(batch, user_key, task_key):
+    return batch.delete(Assignment, user_key, task_key)
+
+
+with Commit() as batch:
+    saved = batch.set(task, mode=IF_NOT_MODIFIED)
+    removed = remove_assignment(batch, user.key, task.key)
+
+saved.value    # None
+removed.value  # True if deleted, False if absent
+```
+
+Reading `.value` before commit raises `CommitError`; it never waits or triggers
+execution. If the block is discarded or commit fails, including an unconfirmed
+outcome after connection loss, `.value` raises `CommitError` explaining that no
+confirmed result is available. This does not imply that nothing was written.
+The original failure still propagates from the context manager.
+
+Converting a result handle to a boolean raises `TypeError`. Write
+`if removed.value:`, not `if removed:`. Handles may be ignored when the caller
+does not need the result.
 
 Queueing a write captures its mode, the record's values, and any expected ETag.
 Later Python mutations do not change the queued operation.
@@ -724,8 +756,8 @@ conditions compare against stored state before the batch's writes begin.
 Unconditional writes in the same batch are also withheld if any mode
 condition fails.
 
-`batch.add()` retains its boolean result: an existing primary key produces `False`
-and does not cancel the batch. Use `batch.set(record, mode=IF_MISSING)` when
+An existing primary key for `batch.add()` resolves its result to `False` after
+successful commit and does not cancel the batch. Use `batch.set(record, mode=IF_MISSING)` when
 insertion must succeed for the batch to proceed.
 
 Reads use ordinary model methods and execute immediately. They may occur before
