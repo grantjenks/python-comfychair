@@ -7,9 +7,9 @@
 Typed nodes, edges, and indexes for Python, backed by Redis.
 
 Comfy Chair stores records by key and relationships as records with their own
-metadata. Type annotations define fields. Explicit indexes provide unique
-lookups and ordered traversal. Namespaces keep independent collections of data
-separate.
+metadata. Type annotations define fields. Primary keys identify records;
+explicit indexes provide ordered traversal. Namespaces keep independent
+collections of data separate.
 
 Edges are records too: they store source and target keys along with fields such
 as a role, status, or priority. Their indexes support queries over one source's
@@ -27,7 +27,7 @@ Define nodes and a typed relationship between them:
 from datetime import datetime, timezone
 from typing import Literal
 
-from comfychair import Commit, Edge, Field, Lookup, Node, Ordering
+from comfychair import Commit, Edge, Field, Node, Ordering, Ref
 
 
 def now():
@@ -36,11 +36,7 @@ def now():
 
 class User(Node):
     name: str
-    email: str = Field()
-
-    indexes = (
-        Lookup(email),
-    )
+    email: str
 
 
 class Task(Node):
@@ -76,7 +72,7 @@ with Commit() as batch:
     batch.set(task)
     batch.set(assignment)
 
-same_user = User.get(email="alice@example.com")
+same_user = User.get(user.key)
 task.title = "Write the README introduction"
 task.set()
 ```
@@ -93,7 +89,7 @@ page = Assignment.page(
 )
 
 for assignment in page:
-    print(assignment.target.key, assignment.priority)
+    print(assignment.target, assignment.priority)
 ```
 
 An edge carries typed references to its endpoints. Reading an edge does not
@@ -118,8 +114,8 @@ class Note(Node):
 
 Comfy Chair creates descriptors for these fields during class creation. Use an
 explicit `Field()` when configuring a field or referencing it within the class
-body, as in `Lookup(email)`. On an instance, field access returns the stored
-Python value; on a class, it returns the descriptor:
+body, as in `Ordering(created_at)`. On an instance, field access returns the
+stored Python value; on a class, it returns the descriptor:
 
 ```python
 Task.created_at                  # Field descriptor
@@ -141,9 +137,9 @@ class Account(Node):
 
 Primary lookup by key is automatic.
 
-`Edge[User, Task]` supplies typed `source` and `target` endpoints. Its default
-key is `(source.key, target.key)`, scoped to the edge model and namespace. There
-is one edge per endpoint pair for a given edge model. Different edge models can
+`Edge[User, Task]` supplies `source: Ref[User]` and `target: Ref[Task]`
+endpoints. Its key consists of the source and target primary keys, scoped to
+the edge model and namespace. There is one edge per endpoint pair for a given edge model. Different edge models can
 connect the same pair independently.
 
 Edges store endpoint references and their own fields, not copies of endpoint
@@ -152,40 +148,29 @@ directed; outgoing indexes do not imply an incoming index.
 
 ### Primary keys
 
-Nodes automatically have a primary lookup on `key`; edges automatically have
-one on their source and target. An explicit primary lookup replaces the default:
+Nodes are identified by their `key` field; edges by their source and target
+primary keys. Declare a node's `key` explicitly to use a supplied identifier
+instead of a generated UUID:
 
 ```python
 class Document(Node):
-    namespace = "archive"
-
-    collection: str = Field()
-    external_id: str = Field()
+    key: str
     title: str
 
-    indexes = (
-        Lookup(collection, external_id, primary=True),
-    )
 
-
-document = Document(
-    collection="manuals",
-    external_id="installation",
-    title="Installation guide",
-)
+document = Document(key="installation", title="Installation guide")
 document.set()
-
-found = Document.get(collection="manuals", external_id="installation")
+found = Document.get("installation")
 ```
 
-Here, `.key` is the composite `(collection, external_id)` identity, with no
-additional UUID identity. Edge models can also declare an alternative primary
-lookup.
+`get()` and `exists()` accept primary keys, not secondary field filters.
+Use an `Ordering` query to find records by other fields. Primary keys cannot
+be `None`.
 
-Be careful not to change a record's key, fields used in a primary lookup, or
-an edge's endpoints. Identity is not enforced as immutable. A subsequent write
-uses the new identity and can leave the old record and references behind;
-it does not rename or move the stored record.
+Be careful not to change a record's key or an edge's endpoints. Identity is not
+enforced as immutable. A subsequent write uses the new identity and can leave
+the old record and references behind; it does not rename or move the stored
+record.
 
 ### Namespaces and storage identity
 
@@ -220,15 +205,12 @@ its counterpart on the batch object.
 | Method | Behavior |
 | --- | --- |
 | `Model.get(...)` | Return the matching record; raise `KeyError` if absent unless an explicit `default` is supplied. |
-| `Model.exists(...)` | Return whether a primary key or unique lookup has a matching record. |
+| `Model.exists(...)` | Return whether a record with the primary key exists. |
 | `record.refresh()` | Replace fields and ETag in place with the stored version; return `None`, or raise `KeyError` if absent. |
 | `Model.get_or_create(...)` | Return `(record, created)`, retrieving a match or inserting a new record. |
 | `record.set()` | Insert or replace the record and update its indexes. |
 | `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
 | `record.delete()` or `Model.delete(key)` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
-
-A conflicting secondary unique lookup raises `IntegrityError`. It never
-replaces another record.
 
 ### Missing records and defaults
 
@@ -241,7 +223,7 @@ task = Task.get(task_key)                # KeyError if absent.
 optional_task = Task.get(task_key, default=None)
 
 missing = object()
-result = User.get(email="alice@example.com", default=missing)
+result = User.get(user_key, default=missing)
 if result is missing:
     print("No matching user")
 ```
@@ -252,12 +234,12 @@ converted to the default value.
 
 ### Existence and refresh
 
-`exists()` accepts the same primary-key and unique-lookup arguments as `get()`.
+`exists()` accepts the same primary keys or typed references as `get()`.
 It returns a boolean without loading a model instance:
 
 ```python
 has_user = User.exists(user.key)
-has_email = User.exists(email="alice@example.com")
+has_reference = User.exists(User.ref(user.key))
 has_assignment = Assignment.exists(user.key, task.key)
 ```
 
@@ -275,29 +257,23 @@ lock the record for a later write.
 
 ### Get or create
 
-Use `get_or_create()` when a record should be retrieved if present and inserted
-otherwise:
+Use `get_or_create()` to retrieve a record by primary key or insert it if absent:
 
 ```python
-user, created = User.get_or_create(
-    email="alice@example.com",
-    defaults={"name": "Alice"},
+task, created = Task.get_or_create(
+    task_key,
+    defaults={"title": "Write the introduction"},
 )
 ```
 
-Lookup arguments must identify a primary key or a complete declared unique
-`Lookup`. Primary-key arguments follow `get()`, including the two endpoints
-for an edge. `defaults` supplies additional fields only when creating; normal
-field defaults and factories supply the remaining values.
+Identity arguments follow `get()`, including typed references and the two
+endpoints for an edge. `defaults` supplies fields only when creating; normal
+field defaults and factories supply the remaining values. Defaults cannot
+override the supplied identity, and `None` is not a valid primary key.
 
 If a match exists, return it with `False` and leave its fields and ETag unchanged.
 Otherwise, validate and insert the new record and return it with `True`.
-The lookup and insertion are coordinated atomically: concurrent calls for the
-same lookup cannot create duplicates. A conflict with a different unique index
-raises `IntegrityError`. Defaults cannot override fields supplied as lookup arguments.
-Lookup arguments containing `None` are rejected with `ValueError`, including
-any `None` component of a composite lookup; omitted index entries cannot
-identify a record for `get_or_create()`.
+Concurrent calls for the same primary key cannot create duplicate records.
 
 `get_or_create()` executes immediately and is not a queued `Commit` method.
 
@@ -326,7 +302,7 @@ new_task.set(mode=IF_EXISTS)
 ```
 
 A failed mode condition raises `ConflictError` without changing the record or
-its indexes. Every mode still enforces validation and unique secondary indexes.
+its indexes. Every mode still enforces validation.
 Unsupported modes raise `ValueError` before the operation is sent or queued.
 
 `add()` is an insert-only convenience method: it returns `False` when
@@ -353,21 +329,67 @@ A mismatch or a record that has since been deleted raises `ConflictError`
 without changing the record or its indexes. The comparison and update execute
 atomically on Redis. A successful write refreshes the object's ETag.
 
-Plain `set()` writes regardless of the previous ETag, subject to validation and
-unique indexes. It also generates a new ETag, even if the field values have not
-changed. ETags are random version tokens rather than content hashes; restoring
+Plain `set()` writes regardless of the previous ETag, subject to validation.
+It also generates a new ETag, even if the field values have not changed. ETags are random version tokens rather than content hashes; restoring
 old field values does not restore an old ETag.
 
-Newly constructed objects and key-only references have no ETag until a successful
-write or an explicit fetch provides one. Requesting `mode=IF_NOT_MODIFIED`
-without an ETag raises `ValueError` before the operation is sent or queued.
+Newly constructed records have no ETag until a successful write provides one;
+fetched records carry the stored ETag. References carry identity only and never
+have an ETag. Requesting `mode=IF_NOT_MODIFIED` without a record ETag raises
+`ValueError` before writing. For queued operations, the record's ETag is read
+and checked when the context exits.
 
 A conflict does not retry the operation automatically. Fetch the current record
 and decide whether to reapply the change.
 
-### Typed references
+### Typed references and alternate identities
 
-Construct a typed reference from a key without fetching the record:
+`Ref[User]` is a typed identifier for a user. It carries the model identity and
+primary key, without user fields, an ETag, or implicit fetching. Construct one
+with `User.ref(key)`; this performs no I/O and does not check existence.
+
+Declare reference fields explicitly:
+
+```python
+class EmailOwner(Node):
+    key: str
+    user_ref: Ref[User]
+
+
+ownership = EmailOwner(
+    key="alice@example.com",
+    user_ref=User.ref(user.key),
+)
+inserted = ownership.add()  # False if that email key already exists.
+
+ownership = EmailOwner.get("alice@example.com")
+loaded_user = User.get(ownership.user_ref)
+```
+
+A reference is used directly as an identifier, with no `.key` step. Methods
+accepting a primary key, including `get()`, `exists()`, and `delete()`, also
+accept a reference to the appropriate model. A reference to a different model
+is rejected.
+
+A `Ref[User]` field requires a reference, not a full `User` object. A bare
+model annotation does not implicitly declare a reference or embed a model.
+The name `user_ref` is an application choice that makes the field's purpose
+clear.
+
+Uniqueness comes from primary keys. An `EmailOwner` node uses the email itself
+as its identity; its user reference is an ordinary stored field. Change ownership
+with a conditional write:
+
+```python
+ownership.user_ref = User.ref(another_user.key)
+ownership.set(mode=IF_NOT_MODIFIED)
+```
+
+Applications maintain these alternate-identity nodes explicitly, including any
+consistency with duplicated fields such as `User.email`. Ordered indexes do
+not enforce uniqueness.
+
+Edge endpoints follow the same reference semantics:
 
 ```python
 user_ref = User.ref(user.key)
@@ -376,13 +398,14 @@ task_ref = Task.ref(task.key)
 assignment = Assignment(source=user_ref, target=task_ref, priority=3)
 assignment.set()
 
-assert assignment.source.key == user.key
-loaded_user = User.get(assignment.source.key)
+loaded_user = User.get(assignment.source)
+loaded_task = Task.get(assignment.target)
 ```
 
-A reference exposes identity, not stored field values. Accessing an unloaded
-field raises an error; it never triggers a request. Constructing a reference
-does not check whether the record exists.
+`Edge[User, Task]` identifies the endpoint models. Its constructor also accepts
+instances of those models as endpoint shorthand; its `source` and `target`
+attributes hold references. References and edges never copy or fetch endpoint
+records.
 
 ### Deletion
 
@@ -395,8 +418,8 @@ user_deleted = User.delete(user.key)
 ```
 
 The caller does not need to fetch an object first. Index cleanup uses the stored
-record, not possibly stale field values on an instance. For composite node keys,
-pass the key tuple to `Model.delete(key)`.
+record, not possibly stale field values on an instance. Typed references can
+be passed directly wherever these calls accept a primary key.
 
 Deletion supports exactly two modes:
 
@@ -424,28 +447,21 @@ entries belonging to the deleted record are removed automatically.
 Applications explicitly remove any related records they no longer need. An
 edge can therefore refer to a missing node.
 
-## Lookups and orderings
+## Ordered indexes
 
-`Lookup` enforces uniqueness and supports exact matches. Every field in a
-composite lookup must be supplied. It returns at most one record and provides no
-ordered traversal.
-
-`Lookup` and `Ordering` declarations take field descriptors, not field-name
-strings. `Ordering` supports traversal with duplicate values. Equality
-predicates match leading fields in the declaration; the following field supplies
+`Ordering` declarations take field descriptors, not field-name strings.
+`Ordering` supports traversal with duplicate values. Equality predicates match leading fields in the declaration; the following field supplies
 the traversal order and may have range bounds.
 
 | Declaration | Example access |
 | --- | --- |
-| `Lookup(email)` | `User.get(email="alice@example.com")` |
 | `Ordering(created_at)` | `Task.page(order_by=Task.created_at, limit=20)` |
 | `Ordering(priority)` on an edge | `Assignment.page(user, order_by=Assignment.priority, reverse=True, limit=20)` |
 | `Ordering(status, created_at)` on an edge | `Assignment.page(user, Assignment.status == "open", order_by=Assignment.created_at, reverse=True, limit=20)` |
 
 Edge indexes are scoped to their source automatically. An
 `Ordering(created_at)` indexes outgoing edges for each source.
-A `Lookup` on an edge's `external_id` field makes that field unique within each
-source's outgoing edges. The source does not need to appear in either declaration.
+The source does not need to appear in the declaration.
 
 ### Predicates and ranges
 
@@ -551,25 +567,24 @@ Counts describe current storage and may change before a subsequent page request.
 
 The built-in indexed field types have deliberately limited rules:
 
-| Field type | Lookup and ordering |
+| Field type | Equality and ordering |
 | --- | --- |
-| `str` | Exact, case-sensitive lookup; Unicode code-point order, without locale collation or normalization. |
-| `bool` | Exact lookup; `False` sorts before `True`. |
-| `int` | Exact lookup and numeric order within the signed 64-bit range. |
+| `str` | Exact, case-sensitive equality; Unicode code-point order, without locale collation or normalization. |
+| `bool` | Exact equality; `False` sorts before `True`. |
+| `int` | Exact equality and numeric order within the signed 64-bit range. |
 | `float` | Finite IEEE 754 binary64 values in numeric order; negative and positive zero compare equal. NaN and infinities are rejected. |
-| `UUID` | Exact lookup and unsigned 128-bit numeric order. |
+| `UUID` | Exact equality and unsigned 128-bit numeric order. |
 | `datetime` | Timezone-aware values normalized to UTC, with microsecond precision, ordered by instant. Naive datetimes are rejected. |
 
 `None` is stored as JSON null but omitted from indexes. If any field in a
-composite index is `None`, the record has no entry in that index. Multiple
-records may therefore have `None` in an otherwise unique field. Primary-key
+composite index is `None`, the record has no entry in that index. Primary-key
 fields cannot be `None`.
 
 JSON arrays and objects can be stored but have no built-in index encoding.
 A custom serialization adapter does not automatically make its type indexable.
-Custom types need a separate, deterministic lookup encoding, and an
-order-preserving encoding for use in `Ordering`. Unsupported index types and
-out-of-range indexed values raise an error before the write is queued or sent.
+Custom types need a separate, deterministic, order-preserving encoding for
+use in `Ordering`. Unsupported index types and out-of-range indexed values
+raise an error before writing, at context exit for queued writes.
 Application-specific normalization, such as lowercasing email addresses, belongs
 in application code.
 
@@ -585,7 +600,7 @@ page = Assignment.page(
 )
 
 for assignment in page:
-    print(assignment.target.key, assignment.priority)
+    print(assignment.target, assignment.priority)
 
 if page.cursor is not None:
     next_page = Assignment.page(
@@ -676,10 +691,25 @@ Converting a result handle to a boolean raises `TypeError`. Write
 `if removed.value:`, not `if removed:`. Handles may be ignored when the caller
 does not need the result.
 
-Queueing a write captures its mode, the record's values, and any expected ETag.
-Later Python mutations do not change the queued operation.
-Successful writes refresh their objects' ETags after commit is confirmed.
-Discarding the batch does not undo changes to Python objects.
+Queueing records the operation, mode, and object reference. On normal context
+exit, Comfy Chair captures the objects' current identities, field values, and
+ETags, then validates and serializes the captured values before writing:
+
+```python
+with Commit() as batch:
+    task.title = "First"
+    batch.set(task)
+    task.title = "Second"
+
+# Stores "Second" and updates task.etag.
+```
+
+Multiple queued sets of the same object all use its values at context exit.
+Model-and-key deletes retain their supplied identity arguments. Successful
+writes update the objects' ETags internally after commit is confirmed; they do
+not return replacement objects. For repeated successful writes through the same
+object, its ETag reflects the last such write. Discarding the batch does not
+undo Python edits.
 
 ### Conditions apply to the whole batch
 
@@ -710,7 +740,16 @@ condition fails.
 
 An existing primary key for `batch.add()` resolves its result to `False` after
 successful commit and does not cancel the batch. Use
-`batch.set(record, mode=IF_MISSING)` when insertion must succeed for the batch to proceed.
+`batch.set(record, mode=IF_MISSING)` when initial absence is a required
+condition for the batch to proceed.
+
+After checking preconditions, operations execute in call order. Their ordinary
+effects and boolean results reflect preceding operations in the batch: two
+`add()` calls for an initially absent key yield `True`, then `False`; a set
+followed by a delete writes and then removes the record. ETag conditions always
+compare against the stored state before any batch writes. A conditional set
+and delete carrying the same matching ETag therefore both pass their checks;
+the set's new ETag does not invalidate the delete.
 
 Reads use ordinary model methods and execute immediately. They may occur before
 or inside the block, but are not snapshot reads and do not see queued writes.
@@ -729,8 +768,7 @@ hash slot. Transactions across cluster shards are not supported.
 Mode-condition conflicts are detected before writes begin. This guarantee does
 not imply general rollback after arbitrary execution errors. Redis does not provide that
 rollback, and a raised execution error must not be taken to mean that nothing
-was written. Individual record operations must still enforce uniqueness and
-maintain their indexes.
+was written. Individual record operations must still maintain their indexes.
 
 A lost connection during commit can leave the outcome unknown. Persistence and
 failover durability depend on the Redis deployment.
@@ -771,14 +809,14 @@ class Reservation(Node):
 ```
 
 `set()`, `add()`, and creation through `get_or_create()` validate before
-writing. Writes in a `Commit` validate before being queued. Mutating an object's
-fields alone does not trigger validation. Local validation does not establish
-uniqueness, existence, or ETag matches; those checks happen atomically on Redis
-during the operation.
+writing. Writes in a `Commit` validate the captured object values at context
+exit, before any writes. Mutating an object's fields alone does not trigger
+validation. Local validation does not establish existence or ETag matches;
+those checks happen atomically on Redis during the operation.
 
 Model definitions are checked at class creation. Invalid declarations raise
-`TypeError`, including index fields that do not belong to the model, multiple
-primary indexes, unsupported indexed field types, incompatible constant defaults, and stored
+`TypeError`, including index fields that do not belong to the model,
+unsupported indexed field types, incompatible constant defaults, and stored
 fields that collide with reserved API names. Default factories are checked when
 their values are produced, not invoked during class creation. These checks do
 not inspect existing Redis data or migrate stored records.
@@ -795,6 +833,7 @@ encodings and are restored to their declared Python types when read. Custom
 field types can supply encoding and decoding adapters. Unsupported values raise
 a serialization error rather than silently converting to strings.
 
-Serialization preserves field values; it does not recursively persist related
-nodes. Index encodings are separate from record JSON: an ordered index must
-preserve the field's comparison semantics rather than sort its JSON text.
+References serialize the referenced model identity and primary key and are
+restored as typed identifiers. Serialization does not embed or recursively
+persist related nodes. Index encodings are separate from record JSON: an
+ordered index must preserve the field's comparison semantics rather than sort its JSON text.
