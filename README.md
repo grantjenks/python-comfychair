@@ -11,7 +11,7 @@ metadata. Type annotations define fields. Explicit indexes provide unique
 lookups and ordered traversal. Namespaces keep independent collections of data
 separate.
 
-The interface centers on six concepts:
+The interface centers on seven concepts:
 
 - **Field:** a stored value on an instance and a query descriptor on its class.
 - **Node:** a record identified by a key, with a generated UUID by default.
@@ -19,6 +19,7 @@ The interface centers on six concepts:
 - **Lookup:** a unique index for exact matches.
 - **Ordering:** an index for ordered traversal, optionally within an equality filter.
 - **Page:** a materialized sequence of results with a continuation cursor.
+- **Commit:** a context manager that collects writes and applies them as an atomic batch.
 
 **Development status:** design stage. The API below specifies the intended
 behavior; an implementation is not yet available. Examples assume a configured
@@ -44,7 +45,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 from typing import Literal
 
-from comfychair import Edge, Field, Lookup, Node, Ordering, transaction
+from comfychair import Commit, Edge, Field, Lookup, Node, Ordering
 
 
 def now():
@@ -164,7 +165,7 @@ class Reservation(Node):
 ```
 
 `set()`, `add()`, and creation through `get_or_create()` validate before
-writing. Transaction writes validate before being queued. Mutating an object's
+writing. Writes in a `Commit` validate before being queued. Mutating an object's
 fields alone does not trigger validation. Local validation does not establish
 uniqueness, existence, or ETag matches; those checks happen atomically on Redis
 during the operation.
@@ -238,8 +239,8 @@ task.set()
 ```
 
 Constructing or changing a Python object performs no I/O. Persistence is explicit.
-The methods below execute immediately. To queue a write in a transaction, call
-its counterpart on the transaction object.
+The methods below execute immediately. To queue a write in a `Commit`, call
+its counterpart on the batch object.
 
 | Method | Behavior |
 | --- | --- |
@@ -321,7 +322,7 @@ The lookup and insertion are coordinated atomically: concurrent calls for the
 same lookup cannot create duplicates. A conflict with a different unique index
 raises `IntegrityError`. Defaults cannot override fields supplied as lookup arguments.
 
-`get_or_create()` executes immediately and is not a queued transaction method.
+`get_or_create()` executes immediately and is not a queued `Commit` method.
 
 ### Write modes
 
@@ -654,50 +655,51 @@ Pages read live data, not a snapshot. Inserts and deletes may change later pages
 Changing an ordering or filtering field between requests can cause a record to
 be skipped or seen again.
 
-## Transactions
+## Commits
 
-Each write maintains its record and indexes together. Use explicit transaction
-methods to group related writes:
+Each write maintains its record and indexes together. Use `Commit` to collect
+related writes in a batch. On successful context exit, it checks all mode
+conditions and applies the writes atomically:
 
 ```python
 task = Task(title="Review the README")
 assignment = Assignment(source=user, target=task)
 
-with transaction() as tx:
-    tx.set(task)
-    tx.set(assignment)
+with Commit() as batch:
+    batch.set(task)
+    batch.set(assignment)
 ```
 
-Only calls through `tx` participate. Ordinary calls such as `task.set()` or
+Only calls through `batch` participate. Ordinary calls such as `task.set()` or
 `User.delete(key)` execute independently, even inside the context block.
-Pass the transaction object to helpers that need to contribute writes.
+Pass the batch object to helpers that need to contribute writes.
 
-`tx.set(record)`, `tx.add(record)`, and `tx.delete(record)` queue their
-operations. `tx.set()` accepts all four write modes; `tx.delete()` accepts
+`batch.set(record)`, `batch.add(record)`, and `batch.delete(record)` queue their
+operations. `batch.set()` accepts all four write modes; `batch.delete()` accepts
 `ALWAYS` and `IF_NOT_MODIFIED`, with the same ETag requirements as immediate
 deletion. Both default to `ALWAYS`. Deletion also accepts a model and primary
 key, without fetching an object first:
 
 ```python
-with transaction() as tx:
-    tx.delete(Assignment, user.key, task.key)
+with Commit() as batch:
+    batch.delete(Assignment, user.key, task.key)
 
-deleted = tx.results[0]
+deleted = batch.results[0]
 ```
 
 Queued calls return `None`. A normal context exit commits the queued operations;
 an exception escaping the block before commit discards them. After successful
-execution, `tx.results` contains one result per operation in call order.
+execution, `batch.results` contains one result per operation in call order.
 `add()` and `delete()` produce their boolean results at that point.
 
 Queueing a write captures its mode, the record's values, and any expected ETag.
 Later Python mutations do not change the queued operation.
 Successful writes refresh their objects' ETags after commit is confirmed.
-Discarding the transaction does not undo changes to Python objects.
+Discarding the batch does not undo changes to Python objects.
 
-### Conditions apply to the whole transaction
+### Conditions apply to the whole batch
 
-Use `tx.set(record, mode=IF_NOT_MODIFIED)` to make the transaction conditional
+Use `batch.set(record, mode=IF_NOT_MODIFIED)` to make the batch conditional
 on a previously read version:
 
 ```python
@@ -705,26 +707,26 @@ task = Task.get(task_key)
 
 task.title = "Completed review"
 
-with transaction() as tx:
-    tx.set(task, mode=IF_NOT_MODIFIED)
-    tx.delete(Assignment, user_key, task_key)
+with Commit() as batch:
+    batch.set(task, mode=IF_NOT_MODIFIED)
+    batch.delete(Assignment, user_key, task_key)
 ```
 
 At commit, **all mode conditions are checked before any queued write is applied**.
 This includes ETag matches for conditional updates and deletions, absence for
 `IF_MISSING`, and presence for `IF_EXISTS`. If any condition fails, commit raises
-`ConflictError` and none of the transaction's writes execute. In this example,
-a conflict leaves both the task and the assignment unchanged by this transaction.
+`ConflictError` and none of the batch's writes execute. In this example,
+a conflict leaves both the task and the assignment unchanged by this batch.
 
 Condition checking and applying the writes form one atomic operation on Redis;
 another client cannot change a checked record between those steps. Mode
-conditions compare against stored state before the transaction's writes begin.
-Unconditional writes in the same transaction are also withheld if any mode
+conditions compare against stored state before the batch's writes begin.
+Unconditional writes in the same batch are also withheld if any mode
 condition fails.
 
-`tx.add()` retains its boolean result: an existing primary key produces `False`
-and does not cancel the transaction. Use `tx.set(record, mode=IF_MISSING)` when
-insertion must succeed for the transaction to proceed.
+`batch.add()` retains its boolean result: an existing primary key produces `False`
+and does not cancel the batch. Use `batch.set(record, mode=IF_MISSING)` when
+insertion must succeed for the batch to proceed.
 
 Reads use ordinary model methods and execute immediately. They may occur before
 or inside the block, but are not snapshot reads and do not see queued writes.
@@ -734,8 +736,8 @@ read-your-writes cache or automatic retry.
 
 ### Limits
 
-**Transactions cannot be nested.** Entering `transaction()` while one is active
-raises `TransactionError`. There are no savepoints, and the public API does not
+**Commits cannot be nested.** Entering `Commit()` while another is active
+raises `CommitError`. There are no savepoints, and the public API does not
 require `watch()` or `multi()` calls.
 
 Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
