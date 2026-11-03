@@ -200,8 +200,8 @@ models that already have stored data.
 ## Store and retrieve
 
 Constructing or changing a Python object performs no I/O. Persistence is explicit.
-The methods below execute immediately. To queue a write in a `Commit`, call
-its counterpart on the batch object.
+The methods below execute immediately. To queue a set, add, or delete in a
+`Commit`, call its counterpart on the batch object.
 
 | Method | Behavior |
 | --- | --- |
@@ -210,6 +210,7 @@ its counterpart on the batch object.
 | `record.refresh()` | Replace fields and ETag in place with the stored version; return `None`, or raise `KeyError` if absent. |
 | `Model.get_or_create(...)` | Return `(record, created)`, retrieving a match or inserting a new record. |
 | `record.set()` | Insert or replace the record and update its indexes. |
+| `record.mutate(callables, attempts=3)` | Apply changes to one record, retry conditional writes on conflicts, and update the object in place; return `None`. |
 | `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
 | `record.delete()` or `Model.delete(key)` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
 
@@ -344,8 +345,57 @@ Requesting `mode=IF_NOT_MODIFIED` without a record ETag raises
 `ValueError` before writing. For queued operations, the record's ETag is read
 and checked when the context exits.
 
-A conflict does not retry the operation automatically. Fetch the current record
-and decide whether to reapply the change.
+An ordinary `set()` or `delete()` does not retry on conflict. Fetch the current
+record and decide whether to reapply the change, or use `mutate()` to replay
+changes to one record.
+
+### Retrying mutations
+
+`record.mutate(callables, *, attempts=3)` immediately applies a list of
+functions to one node or edge and saves with `IF_NOT_MODIFIED`. Each function
+modifies its supplied record and returns `None`:
+
+```python
+def increase_priority(assignment):
+    assignment.priority += 1
+
+
+def reopen(assignment):
+    assignment.status = "open"
+
+
+assignment = Assignment.get(user.key, task.key)
+assignment.mutate([increase_priority, reopen], attempts=3)
+```
+
+The first attempt starts with a working copy of the object's current fields
+and ETag. Functions run in list order, followed by validation, serialization,
+and a conditional write. On `ConflictError`, Comfy Chair fetches the latest
+stored version and replays the functions on a fresh working copy. Failed
+attempts never accumulate changes.
+
+On confirmed success, the original object's fields and ETag are updated in
+place and `mutate()` returns `None`. If it fails, the original object is left
+unchanged by the operation. As with other writes, a connection failure can
+leave the storage outcome unknown.
+
+`attempts` is a positive integer counting total attempts, including the first;
+the default is three. Retries are immediate, without backoff. Exhaustion raises
+the last `ConflictError`. Other exceptions propagate without retrying, including
+callback exceptions other than `ConflictError`, validation and connection
+errors, and `KeyError` when a refresh finds the record missing. An initial
+object without an ETag raises `ValueError`.
+
+Edits made before `mutate()` participate in the first attempt, but only changes
+expressed by the functions are reapplied after a conflict. Put every change
+that must survive retries inside those functions. Functions may execute
+multiple times; keep external side effects outside them and perform those
+effects only after success.
+
+`mutate()` is a standalone operation. There is no `batch.mutate()`, and calling
+`record.mutate()` inside a commit block executes independently of that batch.
+Use [a retrying commit](#retrying-a-callable) to rerun coordinated reads,
+decisions, and writes.
 
 ### Edge endpoints
 
@@ -708,11 +758,13 @@ needs page boundaries or continuation cursors.
 ## Commits
 
 Each write maintains its record and indexes together. Use `Commit` to collect
-related writes in a batch. On successful context exit, it checks all mode
-conditions and applies the writes atomically.
+related writes in a batch. The `with Commit() as batch:` form executes once.
+On successful context exit, it checks all mode conditions and applies the writes
+atomically. `Commit(callable).retry()` explicitly retries an entire operation.
 
-Only calls through `batch` participate. Ordinary calls such as `task.set()` or
-`User.delete(key)` execute independently, even inside the context block.
+Only calls through `batch` participate. Ordinary calls such as `task.set()`,
+`User.delete(key)`, and `record.mutate(...)` execute independently, even inside
+the context block.
 Pass the batch object to helpers that need to contribute writes.
 
 `batch.set(record)`, `batch.add(record)`, and `batch.delete(record)` queue their
@@ -850,12 +902,68 @@ Reads use ordinary model methods and execute immediately. They may occur before
 or inside the block, but are not snapshot reads and do not see queued writes.
 Only versions explicitly supplied through `mode=IF_NOT_MODIFIED` are checked;
 other reads and query results are not protected. There is no local
-read-your-writes cache or automatic retry.
+read-your-writes cache. A context-manager commit makes one attempt; retries
+require the callable form below.
+
+### Retrying a callable
+
+`Commit(operation).retry(attempts=3)` reruns an entire operation on
+`ConflictError`. Constructing `Commit(operation)` does not execute it.
+Each attempt creates a fresh batch, invokes `operation(batch)`, then captures
+and commits the queued writes after the callable returns:
+
+```python
+def mark_reviewed(batch):
+    task = Task.get(task_key)
+    task.title = "Reviewed"
+    batch.set(task, mode=IF_NOT_MODIFIED)
+    return task.key
+
+
+reviewed_key = Commit(mark_reviewed).retry(attempts=3)
+```
+
+Keep reads, decisions, and object construction inside the callable when they
+must be repeated. Closing over an object fetched before the callable runs
+reuses that object's state; the retry mechanism does not refresh it for you.
+The callable receives the batch and queues writes on it, without opening an
+inner `Commit`.
+
+If the callable or its commit raises `ConflictError`, the attempt's queued
+work and return value are discarded and the callable runs again with a fresh
+batch. `attempts` is a positive integer counting total executions, including
+the first; it defaults to three. Retries are immediate, without backoff.
+Exhaustion raises the last `ConflictError`. All other exceptions propagate
+without retrying, including validation errors, `KeyError`, and connection
+failures with uncertain outcomes.
+
+The callable's return value is delivered unchanged only after its batch
+commits successfully. A callable can return a `Result` handle:
+
+```python
+def remove_assignment(batch):
+    assignment = Assignment.get(user_key, task_key)
+    return batch.delete(assignment, mode=IF_NOT_MODIFIED)
+
+
+removed = Commit(remove_assignment).retry(attempts=3)
+deleted = removed.value
+```
+
+The returned handle is resolved when `retry()` returns. Its `.value` cannot
+be read inside the callable, before the batch commits. Handles from failed
+attempts do not resolve to values from a later attempt.
+
+Callables may execute multiple times. Keep external side effects after
+`retry()` succeeds. Immediate writes made inside the callable execute
+independently and are not undone by a failed batch. Retrying also does not undo
+changes to Python objects outside the batch.
 
 ### Limits
 
-**Commits cannot be nested.** Entering `Commit()` while another is active
-raises `CommitError`. There are no savepoints.
+**Commits cannot be nested.** Entering a commit or starting a retrying commit
+while another batch is active raises `CommitError`. A callable runs with its
+supplied batch active. There are no savepoints.
 
 Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
 hash slot. Transactions across cluster shards are not supported.
@@ -990,8 +1098,8 @@ class Reservation(Node):
 ```
 
 `set()`, `add()`, and creation through `get_or_create()` validate before
-writing. Writes in a `Commit` validate the captured object values at context
-exit, before any writes. Mutating an object's fields alone does not trigger
+writing. Each `mutate()` attempt validates its resulting record before writing.
+Writes in a `Commit` validate the captured object values at context exit, before any writes. Mutating an object's fields alone does not trigger
 validation. Local validation does not establish existence or ETag matches;
 those checks happen atomically on Redis during the operation.
 
