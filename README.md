@@ -27,7 +27,7 @@ Define nodes and a typed relationship between them:
 from datetime import datetime, timezone
 from typing import Literal
 
-from comfychair import Commit, Edge, Field, Node, Ordering
+from comfychair import Commit, Edge, Field, Key, Node, Ordering
 
 
 def now():
@@ -35,10 +35,12 @@ def now():
 
 
 class User(Node):
+    key: Key
     name: str
 
 
 class Task(Node):
+    key: Key
     title: str
     created_at: datetime = Field(default_factory=now)
 
@@ -122,22 +124,25 @@ task.created_at                  # datetime value on a Task instance
 Task.created_at >= start         # Query predicate
 ```
 
-`Node` supplies a `key: UUID` field with a generated UUID by default.
-Declare it explicitly to configure its default:
+`Node` supplies a `key: Key` field. Omitting the key generates a fresh `Key`
+when the object is constructed, without accessing storage. Inherit the field
+or declare `key: Key` explicitly, as in the example above; both retain this
+automatic default. An explicit factory is equivalent:
 
 ```python
-from uuid import UUID, uuid4
+from comfychair import Field, Key, Node
 
 
 class Account(Node):
-    key: UUID = Field(default_factory=uuid4)
+    key: Key = Field(default_factory=Key)
     name: str
 ```
 
 Primary lookup and ordered traversal by key are automatic.
 
 `Edge[User, Task]` supplies `source` and `target` fields whose value types
-come from the endpoint models' primary keys. Both are UUIDs in this example.
+come from the endpoint models' primary keys. Both are `Key` values in this
+example.
 An edge's `key` is the pair `(source, target)`, scoped to its model and
 namespace. There is one edge per endpoint pair for a given edge model.
 Different edge models can connect the same pair independently.
@@ -147,11 +152,43 @@ records. The generic parameters identify the endpoint models. Fetching an
 edge does not fetch either node. Relationships are directed; outgoing indexes
 do not imply an incoming index.
 
+### Generated keys
+
+`Key` is Comfy Chair's public identifier type. It uses UUID7 when available in
+Python's standard library (Python 3.14 and later), falling back to UUID4 on
+earlier versions. Applications use `comfychair.Key` without importing or
+choosing a UUID generator.
+
+`Key` values are immutable, hashable, and comparable. Generate a key explicitly
+with `Key()`, or reconstruct one from its standard UUID string representation:
+
+```python
+key = Key()
+text = str(key)
+restored = Key(text)
+
+assert restored == key
+
+account = Account(key=restored, name="Alice")
+account.set()
+same_account = Account.get(restored)
+```
+
+Parsing accepts both UUID4 and UUID7 regardless of the running Python version.
+Reading stored keys preserves their values; existing keys remain valid when
+upgrading Python. JSON serialization and reconstruction of `Key` fields are
+automatic.
+
+Keys compare in unsigned 128-bit numeric order. UUID7 keys approximately follow
+generation time, but key order does not guarantee creation order across
+generators or when UUID4 and UUID7 values are mixed. Declare an `Ordering` on
+an explicit timestamp field when time is the intended query order.
+
 ### Primary keys
 
 Nodes are identified by their `key` field; edges by their source and target
 primary keys. Declare a node's `key` explicitly to use a supplied identifier
-instead of a generated UUID:
+instead of a generated `Key`:
 
 ```python
 class Document(Node):
@@ -514,9 +551,10 @@ primary traversal. Use `order_by=User.key` or
 for descending traversal. `first()` and `last()` use the normal missing-record
 policy, raising `KeyError` on an empty scope unless a default is supplied.
 
-The key type determines ordering: UUIDs use unsigned numeric order and strings
-use Unicode code-point order. UUID order is deterministic but does not indicate
-creation time.
+The key type determines ordering: `Key` and UUID values use unsigned 128-bit
+numeric order, and strings use Unicode code-point order. Key order is
+deterministic but does not guarantee creation order; see
+[generated keys](#generated-keys).
 
 A node's primary index includes every stored record, so `User.count()` counts
 all users of that model and namespace. A source-only edge count includes every
@@ -641,7 +679,7 @@ The built-in indexed field types have deliberately limited rules:
 | `bool` | Exact equality; `False` sorts before `True`. |
 | `int` | Exact equality and numeric order within the signed 64-bit range. |
 | `float` | Finite IEEE 754 binary64 values in numeric order; negative and positive zero compare equal. NaN and infinities are rejected. |
-| `UUID` | Exact equality and unsigned 128-bit numeric order. |
+| `Key`, `UUID` | Exact equality and unsigned 128-bit numeric order. |
 | `datetime` | Timezone-aware values normalized to UTC, with microsecond precision, ordered by instant. Naive datetimes are rejected. |
 
 `None` is stored as JSON null but omitted from indexes. If any field in a
@@ -1000,7 +1038,7 @@ class EmailOwner(Edge[Email, User]):
     pass
 ```
 
-An `EmailOwner` has a string `source` and UUID `target`. Find the owner using
+An `EmailOwner` has a string `source` and a `Key` value for `target`. Find the owner using
 only the email address through automatic source traversal:
 
 ```python
@@ -1117,8 +1155,9 @@ alongside the record's fields. Standard JSON values include strings, numbers,
 booleans, nulls, arrays, and objects.
 
 Serialization also supports fields whose Python types are not native JSON
-types, including UUIDs and datetimes. These values use explicit JSON-compatible
-encodings and are restored to their declared Python types when read. Custom
+types, including `Key`, UUIDs, and datetimes. `Key` values encode as standard UUID
+strings and are restored as `Key` objects. The other types use explicit
+JSON-compatible encodings and are restored to their declared Python types when read. Custom
 field types can supply encoding and decoding adapters. Unsupported values raise
 a serialization error rather than silently converting to strings.
 
