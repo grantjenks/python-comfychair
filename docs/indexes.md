@@ -168,10 +168,51 @@ reflect current storage and may change before a later page request.
 `None` field excludes the whole composite index entry. Primary keys cannot be
 `None`.
 
-JSON arrays and objects have no built-in index encoding. Custom types require a
-deterministic, order-preserving index encoding separate from their
-serialization adapter.
+JSON arrays and objects have no built-in index encoding. Custom types require
+an index adapter separate from their serialization adapter.
 
 Unsupported index types and out-of-range indexed values raise before writing,
 at context exit for queued writes. Application code supplies normalization,
 such as lowercasing email addresses.
+
+## Index Adapters
+
+Register an adapter on the database that stores the index:
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Money:
+    cents: int
+
+
+database.register_type(
+    Money,
+    encode=lambda value: value.cents,
+    decode=Money,
+)
+database.register_index(
+    Money,
+    encode=lambda value: value.cents,
+    as_type=int,
+)
+```
+
+`register_index(type, encode=callable, as_type=scalar_type)` maps a custom
+declared type to a supported index scalar. Comfy Chair supplies the
+storage-specific ordered encoding.
+
+The same adapter converts stored values and query operands. Its output defines
+equality and ordering. Conversion must be deterministic and return the declared
+scalar type within its supported range. Changing the adapter requires
+rebuilding affected indexes.
+
+Registrations belong to one database and apply to the exact declared type.
+Duplicate registrations raise `ValueError`. Configure adapters during startup.
+Databases accessing the same indexes must use compatible adapters.
+
+Class creation checks index structure. Adapter availability is checked against
+the selected database when an operation needs it, before storage commands.
+Commits check all required adapters and encodings before any writes.

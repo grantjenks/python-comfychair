@@ -18,7 +18,7 @@ execute immediately. Queued writes use [Commit](commits.md) batch methods.
 
 All storage methods accept keyword-only `using`. Selection uses the explicit
 database, then the instance's remembered database, then the model binding,
-then the implicit localhost default.
+then the current default database.
 See [Database Configuration](database.md).
 
 ## Missing Records and Defaults

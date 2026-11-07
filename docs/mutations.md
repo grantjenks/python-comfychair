@@ -23,7 +23,7 @@ assignment.mutate([increase_priority, reopen], attempts=3)
 
 `using` selects the database for the conditional write and retry reads.
 Omission uses the instance's database, then the model binding, then the
-implicit localhost default. Conditional writes compare the working copy's
+current default database. Conditional writes compare the working copy's
 ETag with the stored record in that database; the reading `Database` object's
 identity does not restrict the comparison. See
 [Database Configuration](database.md).

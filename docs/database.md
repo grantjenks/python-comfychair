@@ -13,15 +13,36 @@ package, declaring models, and constructing records perform no connection I/O.
 
 `Database.default()` returns the shared default database object for the current
 process without connecting. `Database()` creates a separate object with the
-default localhost settings; it does not replace the implicit default.
+default localhost settings; it does not replace the current default.
 
 ```python
 Database.default().close()
 ```
 
+`database.set_default()` selects that object as the process-wide fallback and
+returns `None`. It performs no I/O and does not close the previous default.
+
+```python
+database = Database("redis://localhost:6379/1")
+database.set_default()
+
+assert Database.default() is database
+```
+
+Explicit `using`, instance associations, and model bindings take precedence.
+Constructing an unsaved record does not associate it with the current default.
+Changing the default neither overrides bindings nor changes existing instance
+associations.
+
+Applications close database objects they create. Closing the current default
+retains its selection; later use reopens owned connections lazily. Configure the
+default during startup. Concurrent changes during operations are unsupported;
+there is no thread-local or context-local default.
+
 ## Database
 
-`Database` identifies a storage connection. Pass database objects to `using`;
+`Database` owns connection configuration, JSON functions, and type and index
+adapters. Pass database objects to `using`;
 string aliases are not supported.
 
 Explicit databases open lazily on first storage access. `Database(...)` and
@@ -70,6 +91,16 @@ URL query options and arbitrary backend keyword arguments are not supported.
 Use a configured client for custom certificates, credential providers, or
 other backend-specific settings.
 
+## Serialization Settings
+
+`json_dumps` and `json_loads` configure JSON encoding and decoding. Supply both
+together; omission uses the standard library. These settings also apply when
+using a supplied client.
+
+`database.register_type()` and `database.register_index()` register adapters
+on that database. Configure adapters during startup. See
+[Serialization](serialization.md) and [Index Adapters](indexes.md#index-adapters).
+
 ## Supplied Clients
 
 `Database(client=redis_client)` uses an existing synchronous Redis client.
@@ -98,7 +129,8 @@ closes or reconfigures a supplied client.
 
 `database.close()` releases owned connections and returns `None`. Closing an
 unopened or already closed database is a no-op. Later storage operations
-reconnect lazily. Bindings and instance database associations remain unchanged.
+reconnect lazily. Bindings, default selection, adapters, and instance database
+associations remain unchanged.
 
 For a supplied client, `close()` leaves the client open. Applications finish
 outstanding operations before closing; there is no draining or cancellation.
@@ -125,7 +157,7 @@ database, create a commit, or undo bindings. Nested contexts each call
 model. Binding does not restrict the model to that database. The same model
 definition can store independent records in multiple databases.
 
-An unbound model uses the implicit default unless `using` or an instance's
+An unbound model uses the current default unless `using` or an instance's
 remembered database selects another connection. Constructing model instances
 requires no binding.
 
@@ -173,7 +205,7 @@ Database selection follows this order:
 1. Explicit `using`.
 2. The instance's remembered database, for instance operations.
 3. The model's default binding.
-4. The implicit default at `redis://localhost:6379/0`.
+4. The current default returned by `Database.default()`.
 
 Connection errors propagate from the selected database. They do not trigger
 fallback to another database.
@@ -228,13 +260,13 @@ with Commit(using=archive) as batch:
 ```
 
 Without `using`, resolve each operation through its record's association,
-model binding, then the implicit default. Model-and-key deletes use the model
-binding or implicit default. All operations must resolve to the same database;
+model binding, then the current default. Model-and-key deletes use the model
+binding or current default. All operations must resolve to the same database;
 conflicting selections reject the batch before writing. Database selection
 uses object identity: separate `Database` objects remain distinct even when
 their URLs match. Reuse one object or select `Commit(using=database)` explicitly.
-Unconfigured models
-share the implicit default, so `Commit()` needs no setup. An empty batch is a
+Unbound models without instance associations share the current default, so
+`Commit()` needs no setup. An empty batch is a
 no-op.
 
 `Commit(operation, using=database).retry(attempts=3)` applies the selected database to each attempt's batch. Ordinary reads and writes inside the callable remain independent and require their own database selection. See [Retrying a Callable](commits.md#retrying-a-callable).
@@ -249,6 +281,6 @@ The API is synchronous. Async applications must arrange execution without
 blocking their event loop.
 
 Create explicit databases and supplied clients inside each worker process.
-Sharing live connections across processes is unsupported. The implicit default
-is process-local. Supplied clients must support the application's intended
+Sharing live connections across processes is unsupported. Default selection
+and adapter registration are process-local. Supplied clients must support the application's intended
 concurrency.

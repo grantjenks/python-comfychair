@@ -13,7 +13,8 @@ orderings support queries on other fields. Edge queries are scoped to a source.
 Namespaces distinguish model storage.
 
 **Status:** API design. No implementation is available. Examples use Redis at
-`redis://localhost:6379/0` unless a database is selected explicitly.
+`redis://localhost:6379/0` unless a different default, binding, or explicit
+`using` selects another database.
 
 ## Documentation
 

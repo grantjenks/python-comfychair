@@ -11,9 +11,13 @@ values, not declaration order.
 
 ## Validate
 
-`record.validate()` checks field types, required values, choices, and index
-encodings without Redis access. Return `None` on success; raise
-`ValidationError` on invalid data. Values are not coerced.
+`record.validate()` checks field types, required values, and choices without
+database access. Return `None` on success; raise `ValidationError` on invalid
+data. Values are not coerced.
+
+Storage operations additionally check required adapters and index encodings
+against the selected database before issuing storage commands. These checks
+do not depend on an override of `validate()`.
 
 Override for cross-field rules. Call `super().validate()` to retain built-in
 checks.
@@ -44,11 +48,14 @@ not by local validation.
 
 Class creation raises `TypeError` for invalid declarations, including:
 
-- Index fields belonging to another model.
-- Unsupported indexed types.
+- Index references to missing fields or fields belonging to another model.
 - Incompatible constant defaults.
 - Stored fields using reserved API names.
 
 Default factories run and their values are checked when produced, not at class
 creation. Declaration checks neither inspect existing Redis data nor migrate
 records.
+
+Custom types are not rejected merely because an adapter is absent at class
+creation. A model can use multiple databases with different registrations.
+Adapter availability is checked when an operation selects its database.

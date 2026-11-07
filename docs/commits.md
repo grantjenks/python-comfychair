@@ -36,8 +36,9 @@ queued operations. `Commit()` makes one attempt;
 
 `Commit(using=database)` directs every queued operation to one database.
 Without `using`, resolve records through their database associations, model
-bindings, then the implicit localhost default. Conflicting selections reject
-the batch before writing. Unconfigured models share the implicit default.
+bindings, then the current default database. Conflicting selections reject
+the batch before writing. Unbound models without instance associations share
+the current default.
 Selection uses `Database` object identity, even for objects with the same URL.
 Reuse one object or select `using` explicitly. ETag checks compare tokens in
 the selected database without checking which connection read them.
