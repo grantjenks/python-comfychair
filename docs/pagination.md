@@ -1,10 +1,14 @@
 # Pages and cursors
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation) · [Example models](example.md)
 
-Examples use the models defined in the [introductory example](example.md).
+## Page
 
-Iterate all users in primary-key order:
+`page()` returns a materialized, read-only sequence. Iteration, indexing,
+slicing, and `len(page)` require no further requests. Length counts fetched
+records, not all query matches.
+
+Primary traversal:
 
 ```python
 page = User.page(limit=100)
@@ -19,7 +23,7 @@ while True:
     page = User.page(limit=100, cursor=page.cursor)
 ```
 
-The same pagination API applies to declared orderings:
+Declared ordering:
 
 ```python
 page = Assignment.page(
@@ -44,41 +48,38 @@ if page.cursor is not None:
     )
 ```
 
-`Page` is a materialized, read-only sequence. Iteration, indexing, slicing, and
-`len(page)` operate on fetched records without further requests. Its length is
-the number of records in this page, not the total number of matches.
+## Cursors
 
-`page.cursor` is an opaque, serializable continuation token, or `None` when the
-query is exhausted. Pass it back with the same namespace, model, source, filters,
-ordering, and direction. Equivalent predicates identify the same query even
-when reconstructed as new Python objects or supplied in a different argument
-order. Omitting the cursor starts at the beginning. A cursor cannot be reused
-for a different query or an incompatible index definition.
+`page.cursor` is an opaque, serializable continuation token; `None` indicates
+exhaustion. Omitting `cursor` starts at the beginning.
 
-Primary traversal continues exclusively after the last primary key for nodes,
-or the last target key within the source for edges. Declared orderings continue
-after the last ordering value and primary-key tiebreaker. Equal timestamps or
-priorities therefore have a deterministic order. Pagination requires no offsets
-or full scans.
+Continuation requires the same namespace, model, source, filters, ordering, and
+direction. Equivalent predicates identify the same query regardless of object
+identity or argument order. A cursor is invalid for a different query or
+incompatible index definition.
 
-Pages read live data, not a snapshot. Inserts and deletes may change later pages.
-In primary traversal, a new key before the cursor will not appear later in that
-traversal; one after it may appear. Changing an ordering or filtering field
-between requests can cause a record to be skipped or seen again.
+Continuation is exclusive: after the last primary key for nodes, the last
+target key within a source for edges, or the last ordering value and
+primary-key tiebreaker for declared indexes. Ties have deterministic order.
+Pagination uses neither offsets nor full scans.
 
-## Automatic iteration
+Pages read live data without a snapshot. Inserts and deletes may change
+subsequent pages. New keys before the cursor are excluded from later primary
+traversal; keys after it may appear. Changes to ordering or filtering fields
+may skip or repeat records.
 
-Use `iterate()` to yield individual records and follow page cursors automatically:
+## iterate
+
+`iterate()` yields records and follows page cursors automatically.
 
 ```python
 for user in User.iterate(batch_size=100):
     print(user.key, user.name)
 ```
 
-It accepts the same source, predicates, `order_by`, `reverse`, and optional
-starting `cursor` as `page()`. The `batch_size` parameter replaces `limit`
-and must be a positive integer. It controls records fetched per request, not
-the total number yielded.
+Arguments follow `page()` for source, predicates, `order_by`, `reverse`, and
+optional starting `cursor`. `batch_size` replaces `limit`: a positive integer
+controlling records fetched per request, not total results.
 
 ```python
 for assignment in Assignment.iterate(
@@ -91,12 +92,11 @@ for assignment in Assignment.iterate(
     print(assignment.target, assignment.priority)
 ```
 
-`iterate()` returns a lazy iterator. The first fetch happens when iteration
-begins; subsequent pages are fetched as needed until the cursor is exhausted.
-An empty query yields no records. Stopping iteration makes no further requests,
-though records from the current page may already have been fetched. The iterator
-does not compute a total count or materialize the full result set.
+Iteration is lazy. The first fetch occurs when iteration starts; subsequent
+pages are fetched as needed until exhaustion. An empty query yields nothing.
+Stopping iteration makes no further requests, although the current page may
+already be buffered.
 
-Iteration uses the same ordering, filtering, and live-data semantics as
-`page()`; it does not provide a snapshot. Use `page()` directly when the caller
-needs page boundaries or continuation cursors.
+`iterate()` does not count or materialize the full result set. Ordering,
+filtering, and live-data behavior match `page()`. Use `page()` for explicit
+page boundaries and continuation tokens.

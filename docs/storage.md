@@ -1,29 +1,25 @@
 # Store and retrieve
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation) · [Example models](example.md)
 
-Examples use the models defined in the [introductory example](example.md).
+Construction and field assignment perform no I/O. Model and instance methods
+execute immediately. Queued writes use [Commit](commits.md) batch methods.
 
-Constructing or changing a Python object performs no I/O. Persistence is explicit.
-The methods below execute immediately. To queue a set, add, or delete in a
-`Commit`, call its counterpart on the batch object.
-
-| Method | Behavior |
+| Method | Result |
 | --- | --- |
-| `Model.get(...)` | Return the matching record; raise `KeyError` if absent unless an explicit `default` is supplied. |
-| `Model.exists(...)` | Return whether a record with the primary key exists. |
-| `record.refresh()` | Replace fields and ETag in place with the stored version; return `None`, or raise `KeyError` if absent. |
-| `Model.get_or_create(...)` | Return `(record, created)`, retrieving a match or inserting a new record. |
-| `record.set()` | Insert or replace the record and update its indexes. |
-| `record.mutate(callables, attempts=3)` | Apply changes to one record, retry conditional writes on conflicts, and update the object in place; return `None`. |
-| `record.add()` | Insert only; return `True` if inserted, `False` if its primary key already exists. |
-| `record.delete()` or `Model.delete(key)` | Remove the record and its index entries; return `True` if a record was deleted, `False` if absent. |
+| `Model.get(...)` | Matching record. |
+| `Model.exists(...)` | Whether the primary key exists. |
+| `record.refresh()` | Replace fields and ETag in place; return `None`. |
+| `Model.get_or_create(...)` | `(record, created)`. |
+| `record.set()` | Insert or replace the record and its indexes; return `None`. |
+| `record.mutate(callables, attempts=3)` | [Apply and retry mutations](mutations.md); return `None`. |
+| `record.add()` | `True` if inserted; `False` if the primary key exists. |
+| `record.delete()` or `Model.delete(key)` | `True` if deleted; `False` if absent. |
 
 ## Missing records and defaults
 
-`get()`, `first()`, and `last()` share one absence policy: omitting
-`default` raises `KeyError` when no record matches. Supplying the keyword-only
-`default` returns that exact value instead.
+`get()`, `first()`, and `last()` raise `KeyError` when no record matches. The
+keyword-only `default` argument returns the supplied object instead.
 
 ```python
 task = Task.get(task_key)                # KeyError if absent.
@@ -35,35 +31,36 @@ if result is missing:
     print("No matching user")
 ```
 
-An explicit default applies only to absence. Invalid queries, connection
-failures, validation failures, and decoding errors still raise; they are not
-converted to the default value.
+`default` applies only to absence. Query, connection, validation, and decoding
+errors propagate.
 
-## Existence and refresh
+## exists
 
-`exists()` accepts the same primary-key arguments as `get()`.
-It returns a boolean without loading a model instance:
+Return whether a primary key exists, without loading a model instance.
+Arguments follow `get()`.
 
 ```python
 has_user = User.exists(user.key)
 has_assignment = Assignment.exists(user.key, task.key)
 ```
 
-`refresh()` explicitly reloads an existing object:
+## refresh
+
+Replace stored fields and ETag in place. Discard unsaved edits and return
+`None`. Raise `KeyError` if absent, leaving the object unchanged.
 
 ```python
 task.refresh()
 ```
 
-It replaces the object's stored fields and ETag, discarding unsaved edits.
-If the stored record no longer exists, it raises `KeyError` and leaves the
-object unchanged. Refreshing does not load related nodes. Like other reads,
-existence checks and refreshes reflect current storage and do not reserve or
-lock the record for a later write.
+Related nodes are not loaded. Reads, including `exists()` and `refresh()`,
+observe current storage without reserving or locking records for subsequent
+writes.
 
-## Get or create
+## get_or_create
 
-Use `get_or_create()` to retrieve a record by primary key or insert it if absent:
+Retrieve a record by primary key or insert it if absent. Return
+`(record, created)`.
 
 ```python
 task, created = Task.get_or_create(
@@ -72,30 +69,31 @@ task, created = Task.get_or_create(
 )
 ```
 
-Identity arguments follow `get()`, including the two endpoints for an edge.
-`defaults` supplies fields only when creating; normal
-field defaults and factories supply the remaining values. Defaults cannot
-override the supplied identity, and `None` is not a valid primary key.
+Identity arguments follow `get()`, including both endpoints for edges.
+`defaults` supplies creation fields; field defaults and factories supply
+remaining values. `defaults` cannot override identity. Primary keys cannot be
+`None`.
 
-If a match exists, return it with `False` and leave its fields and ETag unchanged.
-Otherwise, validate and insert the new record and return it with `True`.
-Concurrent calls for the same primary key cannot create duplicate records.
+An existing record returns with `created=False`; its fields and ETag remain
+unchanged. Otherwise, validate and insert the record, returning `created=True`.
+Concurrent calls for one primary key cannot create duplicates.
 
-`get_or_create()` executes immediately and is not a queued `Commit` method.
+`get_or_create()` executes immediately. It is not a batch method.
 
 ## Write modes
 
-For an immediate `set()`, the mode controls whether the write is allowed:
+`set(mode=ALWAYS)` inserts or replaces a record, subject to the selected
+condition:
 
-| Mode | Behavior |
+| Mode | Condition |
 | --- | --- |
-| `ALWAYS` | Insert or replace, regardless of existence or ETag. The default. |
-| `IF_NOT_MODIFIED` | Replace only if the record exists and its ETag matches the object's ETag. |
-| `IF_MISSING` | Insert only if the primary key does not exist. |
-| `IF_EXISTS` | Replace only if the primary key exists, regardless of its ETag. |
+| `ALWAYS` | None. Default. |
+| `IF_NOT_MODIFIED` | Record exists and stored ETag matches the object's ETag. |
+| `IF_MISSING` | Primary key is absent. |
+| `IF_EXISTS` | Primary key exists; ETag is ignored. |
 
-Modes are members of the `Mode` enum and are also exported as module-level
-constants. `IF_NOT_MODIFIED` and `Mode.IF_NOT_MODIFIED` are the same value.
+Modes are `Mode` enum members, also exported as module constants.
+`IF_NOT_MODIFIED` and `Mode.IF_NOT_MODIFIED` are identical.
 
 ```python
 from comfychair import ALWAYS, IF_NOT_MODIFIED, IF_MISSING, IF_EXISTS, Mode
@@ -107,25 +105,24 @@ new_task.title = "Revise the installation guide"
 new_task.set(mode=IF_EXISTS)
 ```
 
-A failed mode condition raises `ConflictError` without changing the record or
-its indexes. Every mode still enforces validation.
-Unsupported modes raise `ValueError` before the operation is sent or queued.
+A failed condition raises `ConflictError` without changing the record or
+indexes. All modes validate. Unsupported modes raise `ValueError` before
+execution or queueing.
 
-For an immediate write, `add()` returns `False` when the primary key already
-exists; `set(mode=IF_MISSING)` raises `ConflictError` instead.
+`add()` returns `False` for an existing key; `set(mode=IF_MISSING)` raises
+`ConflictError`.
 
-Inside a `Commit`, modes are preconditions on the stored state before any
-batch writes. They are not rechecked between operations. Once all conditions
-pass, sets insert or replace in call order, while `add()` remains insert-only
-at its position in that order. See [batch conditions](commits.md#conditions-apply-to-the-whole-batch).
+In a batch, conditions apply to the stored state before all writes and are not
+rechecked between operations. Sets then insert or replace in call order;
+`add()` remains insert-only at its position. See
+[batch conditions](commits.md#conditions-apply-to-the-whole-batch).
 
 ## ETags and conditional updates
 
-Every successful insert or replacement generates a fresh, opaque ETag.
-Fetching a record retains its ETag automatically, available as `record.etag`.
-Changing Python fields does not change the ETag.
-
-Use `mode=IF_NOT_MODIFIED` to protect a read-modify-write operation:
+`record.etag` holds an opaque random version token. Every successful insert or
+replacement generates a new ETag, including writes of unchanged values. Reads
+retain the stored ETag; field assignments do not change it. Restoring old field
+values does not restore an old ETag.
 
 ```python
 task = Task.get(task_key)
@@ -134,29 +131,23 @@ task.title = "Updated title"
 task.set(mode=IF_NOT_MODIFIED)
 ```
 
-The write succeeds only if the stored record still has the ETag that was read.
-A mismatch or a record that has since been deleted raises `ConflictError`
-without changing the record or its indexes. The comparison and update execute
-atomically on Redis. A successful write refreshes the object's ETag.
+`IF_NOT_MODIFIED` atomically compares the stored ETag and writes the record and
+indexes on Redis. A stale ETag or deleted record raises `ConflictError` without
+changes. Confirmed writes update the object's ETag. Plain `set()` ignores the
+previous ETag but still validates.
 
-Plain `set()` writes regardless of the previous ETag, subject to validation.
-It also generates a new ETag, even if the field values have not changed.
-ETags are random version tokens rather than content hashes; restoring
-old field values does not restore an old ETag.
+New records have no ETag until written. Primary keys do not carry ETags.
+`IF_NOT_MODIFIED` without an object ETag raises `ValueError` before writing.
+Queued operations capture and check ETags at context exit.
 
-Newly constructed records have no ETag until a successful write provides one;
-fetched records carry the stored ETag. Primary-key values do not carry ETags.
-Requesting `mode=IF_NOT_MODIFIED` without a record ETag raises
-`ValueError` before writing. For queued operations, the record's ETag is read
-and checked when the context exits.
-
-An ordinary `set()` or `delete()` does not retry on conflict. Fetch the current
-record and decide whether to reapply the change, or use `mutate()` to replay
-changes to one record.
+`set()` and `delete()` do not retry conflicts. Reload before reapplying
+changes, or use [mutate()](mutations.md).
 
 ## Deletion
 
-Delete through an instance or directly by primary key:
+Delete by instance or primary key. Direct deletion does not require a prior
+fetch. Index cleanup uses stored values, including when the supplied instance
+is stale.
 
 ```python
 deleted = Assignment.delete(user.key, task.key)  # True if the edge existed.
@@ -164,15 +155,10 @@ deleted_again = assignment.delete()             # False after removal.
 user_deleted = User.delete(user.key)
 ```
 
-The caller does not need to fetch an object first. Index cleanup uses the stored
-record, not possibly stale field values on an instance.
-
-Immediate deletion supports exactly two modes:
-
 | Mode | Behavior |
 | --- | --- |
-| `ALWAYS` | Delete if present; return `True` if deleted and `False` if absent. The default. |
-| `IF_NOT_MODIFIED` | Delete only if the record exists and its ETag matches the object's ETag; return `True` on success, otherwise raise `ConflictError`. |
+| `ALWAYS` | Delete if present. Return `True` if deleted, otherwise `False`. Default. |
+| `IF_NOT_MODIFIED` | Delete if present with a matching ETag. Return `True`; otherwise raise `ConflictError`. |
 
 ```python
 task = Task.get(task_key)
@@ -180,20 +166,16 @@ task = Task.get(task_key)
 deleted = task.delete(mode=IF_NOT_MODIFIED)
 ```
 
-Conditional deletion compares the ETag and removes the record and its index
-entries atomically. It requires an object carrying an ETag; a model-and-key
-call cannot supply that version and raises `ValueError` if
-used with `IF_NOT_MODIFIED`. `IF_MISSING` and `IF_EXISTS` are unsupported for
-deletion and raise `ValueError`.
+Conditional deletion atomically compares the ETag and removes the record and
+index entries. It requires an instance carrying an ETag. Model-and-key calls
+with `IF_NOT_MODIFIED` raise `ValueError`. Deletion with `IF_MISSING` or
+`IF_EXISTS` also raises `ValueError`.
 
-In a `Commit`, conditional deletion checks the initial stored ETag along with
-the other batch preconditions. Its result then reflects whether that operation
-actually deleted a record, so it can return `False` if an earlier operation
-in the batch already removed the record.
+Batch deletion checks conditions against the initial stored state. Its result
+reflects execution order and may be `False` after an earlier deletion in the
+batch.
 
-There are no cascading deletes. Deleting a node leaves its incoming and outgoing
-edges intact. Deleting an edge leaves both endpoint nodes intact. Only index
-entries belonging to the deleted record are removed automatically.
-
-Applications explicitly remove any related records they no longer need. An
-edge can therefore refer to a missing node.
+Deletion does not cascade. Node deletion preserves incoming and outgoing edges;
+edge deletion preserves endpoint nodes. Only the deleted record's index entries
+are removed. Applications remove related records explicitly; edges may
+reference missing nodes.

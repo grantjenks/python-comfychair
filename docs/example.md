@@ -1,10 +1,10 @@
 # Example
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation)
 
-Examples assume a configured Redis connection.
+Requires a configured Redis connection.
 
-Define nodes and a typed relationship between them:
+## Models
 
 ```python
 from datetime import datetime, timezone
@@ -44,7 +44,7 @@ class Assignment(Edge[User, Task]):
     )
 ```
 
-Create records and store related writes together:
+## Writes
 
 ```python
 user = User(name="Alice")
@@ -61,7 +61,9 @@ task.title = "Write the README introduction"
 task.set()
 ```
 
-List a user's open assignments, newest first:
+## Queries
+
+Open assignments in descending creation order:
 
 ```python
 page = Assignment.page(
@@ -76,5 +78,5 @@ for assignment in page:
     print(assignment.target, assignment.priority)
 ```
 
-An edge stores its endpoint keys. Reading an edge does not fetch either node.
-Every query uses an automatic primary index or a declared ordering.
+Edges contain endpoint keys; reading an edge does not fetch nodes. Queries use
+primary indexes or declared orderings.

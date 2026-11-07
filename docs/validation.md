@@ -1,22 +1,22 @@
 # Choices and validation
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation) · [Example models](example.md)
 
-Examples use the models defined in the [introductory example](example.md).
+## Choices
 
-Use `Literal` annotations for a fixed set of choices, as in the `Assignment`
-model's `status` field. Python enum types are also supported: fields hold enum
-members in Python and serialize their underlying values. An enum is indexable
-when its values share a supported index type; ordering follows those values,
-not member declaration order.
+`Literal` defines a fixed set of values, as in `Assignment.status`. Enum fields
+hold Python enum members and serialize their underlying values. Enums are
+indexable when all values share a supported index type. Ordering follows
+values, not declaration order.
 
-Call `record.validate()` to check field types, required values, choices, and
-supported index encodings without accessing Redis. It returns `None` on success
-and raises `ValidationError` on invalid data. Validation does not silently
-coerce values to other types.
+## validate
 
-Override `validate()` for rules involving multiple fields, and call
-`super().validate()` to retain the built-in checks:
+`record.validate()` checks field types, required values, choices, and index
+encodings without Redis access. Return `None` on success; raise
+`ValidationError` on invalid data. Values are not coerced.
+
+Override for cross-field rules. Call `super().validate()` to retain built-in
+checks.
 
 ```python
 from comfychair import ValidationError
@@ -33,14 +33,22 @@ class Reservation(Node):
 ```
 
 `set()`, `add()`, and creation through `get_or_create()` validate before
-writing. Each `mutate()` attempt validates its resulting record before writing.
-Writes in a `Commit` validate the captured object values at context exit, before any writes. Mutating an object's fields alone does not trigger
-validation. Local validation does not establish existence or ETag matches;
-those checks happen atomically on Redis during the operation.
+writing. Each `mutate()` attempt validates its result. Commits validate
+captured values at context exit before any writes. Field assignment alone does
+not validate.
 
-Model definitions are checked at class creation. Invalid declarations raise
-`TypeError`, including index fields that do not belong to the model,
-unsupported indexed field types, incompatible constant defaults, and stored
-fields that collide with reserved API names. Default factories are checked when
-their values are produced, not invoked during class creation. These checks do
-not inspect existing Redis data or migrate stored records.
+Existence and ETag conditions are checked atomically on Redis during execution,
+not by local validation.
+
+## Model definitions
+
+Class creation raises `TypeError` for invalid declarations, including:
+
+- Index fields belonging to another model.
+- Unsupported indexed types.
+- Incompatible constant defaults.
+- Stored fields using reserved API names.
+
+Default factories run and their values are checked when produced, not at class
+creation. Declaration checks neither inspect existing Redis data nor migrate
+records.

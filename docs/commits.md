@@ -1,24 +1,24 @@
 # Commits
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation) · [Example models](example.md)
 
-Examples use the models defined in the [introductory example](example.md).
+## Commit
 
-Each write maintains its record and indexes together. Use `Commit` to collect
-related writes in a batch. The `with Commit() as batch:` form executes once.
-On successful context exit, it checks all mode conditions and applies the writes
-atomically. `Commit(callable).retry()` explicitly retries an entire operation.
+`with Commit() as batch:` queues writes for one execution at normal context
+exit. Commit checks mode conditions and applies writes atomically, subject to
+[execution limits](#limits). Each write maintains its record and indexes
+together.
 
-Only calls through `batch` participate. Ordinary calls such as `task.set()`,
-`User.delete(key)`, and `record.mutate(...)` execute independently, even inside
-the context block.
-Pass the batch object to helpers that need to contribute writes.
+Only batch methods participate. Model and instance methods, including `set()`,
+`delete()`, and `mutate()`, execute independently inside the block. Pass
+`batch` to helpers that queue writes.
 
-`batch.set(record)`, `batch.add(record)`, and `batch.delete(record)` queue their
-operations. `batch.set()` accepts all four write modes; `batch.delete()` accepts
-`ALWAYS` and `IF_NOT_MODIFIED`, with the same ETag requirements as immediate
-deletion. Both default to `ALWAYS`. Deletion also accepts a model and primary
-key, without fetching an object first:
+`batch.set(record)`, `batch.add(record)`, and `batch.delete(record)` queue
+operations. Set accepts all four [write modes](storage.md#write-modes); delete
+accepts `ALWAYS` and `IF_NOT_MODIFIED` with the same ETag requirements as
+immediate deletion. Set and delete default to `ALWAYS`.
+
+Deletion also accepts a model and primary key without a prior fetch:
 
 ```python
 with Commit() as batch:
@@ -28,18 +28,22 @@ if removed.value:
     print("Assignment removed")
 ```
 
-Each queued call returns a `Result[T]` handle. Its `.value` becomes available
-only after the whole commit succeeds and is confirmed. A normal context exit
-commits the queued operations; an exception escaping the block before commit
-discards them.
+Normal exit commits. An exception escaping the block before commit discards
+queued operations. `Commit()` makes one attempt;
+[the callable form](#retrying-a-callable) supports retries.
 
-| Queued method | Handle | Value after successful commit |
+## Result
+
+Each queued operation returns a `Result[T]`. Its `.value` is available only
+after the whole commit succeeds and is confirmed.
+
+| Method | Handle | Value |
 | --- | --- | --- |
-| `batch.set(record)` | `Result[None]` | `None`, matching immediate `set()`. |
-| `batch.add(record)` | `Result[bool]` | `True` if inserted, `False` if the primary key already exists. |
-| `batch.delete(...)` | `Result[bool]` | `True` if deleted at this point in the operation order, `False` if absent. Conditional deletion requires an initial ETag match. |
+| `batch.set(record)` | `Result[None]` | `None`. |
+| `batch.add(record)` | `Result[bool]` | `True` if inserted; `False` if the key exists at this operation. |
+| `batch.delete(...)` | `Result[bool]` | `True` if deleted; `False` if absent at this operation. Conditional deletion requires an initial ETag match. |
 
-Results stay attached to their operations and can be returned from helpers:
+Handles remain attached to their operations and may be returned from helpers:
 
 ```python
 def remove_assignment(batch, user_key, task_key):
@@ -54,19 +58,20 @@ saved.value    # None
 removed.value  # True if deleted, False if absent
 ```
 
-Reading `.value` before commit raises `CommitError`; it never waits or triggers
-execution. If the block is discarded or commit fails, including an unconfirmed
-outcome after connection loss, `.value` raises `CommitError` explaining that no
-confirmed result is available. This does not imply that nothing was written.
-The original failure still propagates from the context manager.
+Reading `.value` before confirmation raises `CommitError`; it does not wait or
+execute operations. Discarded batches, failed commits, and unconfirmed outcomes
+leave handles unresolved. The error reports that no confirmed result is
+available, not that no writes occurred. The original failure propagates from
+the context manager.
 
-Converting a result handle to a boolean raises `TypeError`. Write
-`if removed.value:`, not `if removed:`. Handles may be ignored when the caller
-does not need the result.
+Converting a handle to `bool` raises `TypeError`. Use `removed.value`. Ignoring
+handles is permitted.
 
-Queueing records the operation, mode, and object reference. On normal context
-exit, Comfy Chair captures the objects' current identities, field values, and
-ETags, then validates and serializes the captured values before writing:
+## Capture and object state
+
+Queueing retains the operation, mode, and object reference. Normal context exit
+captures current identities, fields, and ETags, then validates and serializes
+all captured values before writing.
 
 ```python
 with Commit() as batch:
@@ -77,17 +82,16 @@ with Commit() as batch:
 # Stores "Second" and updates task.etag.
 ```
 
-Multiple queued sets of the same object all use its values at context exit.
-Model-and-key deletes retain their supplied identity arguments. Successful
-writes update the objects' ETags internally after commit is confirmed; they do
-not return replacement objects. For repeated successful writes through the same
-object, its ETag reflects the last such write. Discarding the batch does not
-undo Python edits.
+Repeated sets of one object all use its values at context exit. Model-and-key
+deletes retain the supplied identity arguments.
+
+Confirmed writes update object ETags in place. Repeated successful writes
+through one object leave its ETag at the last such write. Writes do not return
+replacement objects. Discarding a batch does not undo Python edits.
 
 ## Conditions apply to the whole batch
 
-Use `batch.set(record, mode=IF_NOT_MODIFIED)` to make the batch conditional
-on a previously read version:
+Conditional batches check previously read versions with `IF_NOT_MODIFIED`:
 
 ```python
 task = Task.get(task_key)
@@ -99,37 +103,25 @@ with Commit() as batch:
     batch.delete(Assignment, user_key, task_key)
 ```
 
-At commit, **all mode conditions are checked before any queued write is applied**.
-This includes ETag matches for conditional updates and deletions, absence for
-`IF_MISSING`, and presence for `IF_EXISTS`. If any condition fails, commit raises
-`ConflictError` and none of the batch's writes execute. In this example,
-a conflict leaves both the task and the assignment unchanged by this batch.
+All mode conditions are checked against stored state immediately before batch
+writes, not at context entry. Checks include ETags for conditional sets and
+deletes, absence for `IF_MISSING`, and presence for `IF_EXISTS`.
 
-**Conditions gate the batch using its starting state; operation results reflect
-execution order.** Starting state means the stored state immediately before
-the batch's writes, not when the Python context was entered.
+A failed condition raises `ConflictError` before any batch write, including
+unconditional writes. Condition checking and execution form one atomic Redis
+operation; other clients cannot change checked records between them.
 
-Condition checking and applying the writes form one atomic operation on Redis;
-another client cannot change a checked record between those steps. Unconditional
-writes in the same batch are also withheld if any mode condition fails.
+After checks pass, operations execute in call order. Results reflect preceding
+operations; conditions are not rechecked.
 
-A primary key present when a `batch.add()` executes produces `False` without
-cancelling the batch. Earlier writes in the batch affect that result. Use
-`batch.set(record, mode=IF_MISSING)` when initial absence is a required
-condition for the batch to proceed.
-
-After checking preconditions, operations execute in call order. Their ordinary
-effects and boolean results reflect preceding operations in the batch: two
-`add()` calls for an initially absent key yield `True`, then `False`; a set
-followed by a delete writes and then removes the record. ETag conditions always
-compare against the stored state before any batch writes. A conditional set
-and delete carrying the same matching ETag therefore both pass their checks;
-the set's new ETag does not invalidate the delete.
-
-Two `set(..., mode=IF_MISSING)` calls for the same initially absent key both
-pass their preconditions. Both sets execute, and the second replaces the first.
-Similarly, two conditional deletes of the same initial version both pass their
-ETag checks, but only the first removes a record:
+| Operations on one key | Behavior |
+| --- | --- |
+| Two adds; initially absent | `True`, then `False`. |
+| Set, then delete | Write, then remove. |
+| Conditional set and delete with the same matching ETag | Both checks pass. The new ETag does not invalidate deletion. |
+| Two sets with `IF_MISSING`; initially absent | Both checks pass. The second set replaces the first. |
+| Two conditional deletes with the same matching ETag | Both checks pass. `True`, then `False`. |
+| Delete, then conditional set with an initially matching ETag | Delete, then recreate. |
 
 ```python
 task = Task.get(task_key)
@@ -142,22 +134,20 @@ assert first.value is True
 assert second.value is False
 ```
 
-A conditional set can also recreate a record deleted earlier in the same
-batch, provided its precondition passed against the initial stored state.
+`batch.add()` returns `False` if the key exists when it executes, without
+cancelling the batch. Use `batch.set(..., mode=IF_MISSING)` to require initial
+absence for the entire batch.
 
-Reads use ordinary model methods and execute immediately. They may occur before
-or inside the block, but are not snapshot reads and do not see queued writes.
-Only versions explicitly supplied through `mode=IF_NOT_MODIFIED` are checked;
-other reads and query results are not protected. There is no local
-read-your-writes cache. A context-manager commit makes one attempt; retries
-require the callable form below.
+Reads execute immediately before or inside the block. They are not snapshots
+and do not see queued writes; there is no local read-your-writes cache. Only
+versions supplied through `IF_NOT_MODIFIED` are checked. Other reads and query
+results are unprotected.
 
 ## Retrying a callable
 
-`Commit(operation).retry(attempts=3)` reruns an entire operation on
-`ConflictError`. Constructing `Commit(operation)` does not execute it.
-Each attempt creates a fresh batch, invokes `operation(batch)`, then captures
-and commits the queued writes after the callable returns:
+`Commit(operation).retry(attempts=3)` retries an operation on `ConflictError`.
+Construction does not execute the callable. Each attempt creates a fresh batch,
+calls `operation(batch)`, then captures and commits writes after it returns.
 
 ```python
 def mark_reviewed(batch):
@@ -170,22 +160,22 @@ def mark_reviewed(batch):
 reviewed_key = Commit(mark_reviewed).retry(attempts=3)
 ```
 
-Keep reads, decisions, and object construction inside the callable when they
-must be repeated. Closing over an object fetched before the callable runs
-reuses that object's state; the retry mechanism does not refresh it for you.
-The callable receives the batch and queues writes on it, without opening an
-inner `Commit`.
+Put reads, decisions, and object construction inside the callable when they
+must repeat. Closed-over objects retain their existing state; retry does not
+refresh them. Queue writes on the supplied batch without opening another
+commit.
 
-If the callable or its commit raises `ConflictError`, the attempt's queued
-work and return value are discarded and the callable runs again with a fresh
-batch. `attempts` is a positive integer counting total executions, including
-the first; it defaults to three. Retries are immediate, without backoff.
-Exhaustion raises the last `ConflictError`. All other exceptions propagate
-without retrying, including validation errors, `KeyError`, and connection
-failures with uncertain outcomes.
+A `ConflictError` from the callable or commit discards that attempt's queued
+work and return value, then retries with a fresh batch. `attempts` is a
+positive integer counting total executions, including the first. Default:
+three. Retries are immediate, without backoff.
 
-The callable's return value is delivered unchanged only after its batch
-commits successfully. A callable can return a `Result` handle:
+Exhaustion raises the last `ConflictError`. Other exceptions propagate without
+retry, including validation errors, `KeyError`, and connection failures with
+uncertain outcomes.
+
+Return the callable's result unchanged after confirmed commit. The result may
+be a `Result` handle:
 
 ```python
 def remove_assignment(batch):
@@ -197,33 +187,32 @@ removed = Commit(remove_assignment).retry(attempts=3)
 deleted = removed.value
 ```
 
-The returned handle is resolved when `retry()` returns. Its `.value` cannot
-be read inside the callable, before the batch commits. Handles from failed
-attempts do not resolve to values from a later attempt.
+A returned handle is resolved when `retry()` returns. Reading `.value` inside
+the callable raises `CommitError`. Handles from failed attempts never acquire
+results from later attempts.
 
-Callables may execute multiple times. Keep external side effects after
-`retry()` succeeds. Immediate writes made inside the callable execute
-independently and are not undone by a failed batch. Retrying also does not undo
-changes to Python objects outside the batch.
+Callables may execute repeatedly. Perform external side effects after success.
+Immediate writes inside the callable remain independent; failed batches do not
+undo them. Retrying does not undo changes to Python objects outside the batch.
 
 ## Limits
 
-**Commits cannot be nested.** Entering a commit or starting a retrying commit
-while another batch is active raises `CommitError`. A callable runs with its
-supplied batch active. There are no savepoints.
+Nested commits and savepoints are not supported. Entering a commit or starting
+a retrying commit while a batch is active raises `CommitError`. The callable
+form runs with its supplied batch active.
 
-Atomic multi-key work requires one Redis primary, or keys in one Redis Cluster
-hash slot. Transactions across cluster shards are not supported.
+Atomic multi-key operations require one Redis primary or one Redis Cluster hash
+slot. Cross-shard transactions are not supported.
 
-Mode-condition conflicts are detected before writes begin. This guarantee does
-not imply general rollback after arbitrary execution errors. Redis does not provide that
-rollback, and a raised execution error must not be taken to mean that nothing
-was written. Individual record operations must still maintain their indexes.
+Mode conflicts precede writes. Arbitrary execution errors do not imply rollback
+or absence of writes; Redis provides no general rollback. Individual record
+operations must still maintain their indexes.
 
-A lost connection during commit can leave the outcome unknown. Persistence and
-failover durability depend on the Redis deployment.
+Connection loss may leave commit outcome unknown. Persistence and failover
+durability depend on the Redis deployment.
 
-See [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/),
+Execution constraints:
+[Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/),
 [Redis scripting](https://redis.io/docs/latest/develop/programmability/eval-intro/),
-and the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
-for the underlying execution constraints.
+and
+[Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/).

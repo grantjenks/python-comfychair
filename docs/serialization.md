@@ -1,22 +1,19 @@
 # Serialization
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation)
 
-Examples use the models defined in the [introductory example](example.md).
+Record values use JSON. An automatically managed ETag is stored alongside
+fields. Standard values include strings, numbers, booleans, nulls, arrays, and
+objects.
 
-Record values are serialized as JSON, with an automatically managed ETag stored
-alongside the record's fields. Standard JSON values include strings, numbers,
-booleans, nulls, arrays, and objects.
+`Key`, UUID, and datetime fields have JSON-compatible encodings and reconstruct
+their declared Python types on read. `Key` encodes as a standard UUID string.
+Custom types can supply encoding and decoding adapters. Unsupported values
+raise a serialization error; they are not implicitly converted to strings.
 
-Serialization also supports fields whose Python types are not native JSON
-types, including `Key`, UUIDs, and datetimes. `Key` values encode as standard UUID
-strings and are restored as `Key` objects. The other types use explicit
-JSON-compatible encodings and are restored to their declared Python types when read. Custom
-field types can supply encoding and decoding adapters. Unsupported values raise
-a serialization error rather than silently converting to strings.
+Edge endpoints use the key types declared by their endpoint models.
+Serialization neither embeds nor recursively persists related nodes.
 
-Edges serialize their source and target primary-key values using the types
-specified by their endpoint models. Serialization does not embed or recursively
-persist related nodes. Index encodings are separate from record JSON: an
-ordered index must preserve the field's comparison semantics rather than sort
-its JSON text.
+Index encodings are separate from record JSON.
+[Ordered indexes](indexes.md#indexed-values) must preserve comparison
+semantics, not JSON text order.

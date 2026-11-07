@@ -1,12 +1,12 @@
-# Retrying mutations
+# Mutations
 
-[README](../README.md) · [Documentation](../README.md#documentation)
+[Documentation](../README.md#documentation) · [Example models](example.md)
 
-Examples use the models defined in the [introductory example](example.md).
+## mutate
 
-`record.mutate(callables, *, attempts=3)` immediately applies a list of
-functions to one node or edge and saves with `IF_NOT_MODIFIED`. Each function
-modifies its supplied record and returns `None`:
+`record.mutate(callables, *, attempts=3)` applies a list of functions to a node
+or edge and saves with `IF_NOT_MODIFIED`. Each function modifies its argument
+and returns `None`.
 
 ```python
 def increase_priority(assignment):
@@ -21,31 +21,30 @@ assignment = Assignment.get(user.key, task.key)
 assignment.mutate([increase_priority, reopen], attempts=3)
 ```
 
-The first attempt starts with a working copy of the object's current fields
-and ETag. Functions run in list order, followed by validation, serialization,
-and a conditional write. On `ConflictError`, Comfy Chair fetches the latest
-stored version and replays the functions on a fresh working copy. Failed
-attempts never accumulate changes.
+The first attempt uses a working copy of the object's current fields and ETag.
+Functions run in list order, followed by validation, serialization, and
+conditional write. On `ConflictError`, fetch the current stored record and
+replay the functions on a fresh working copy. Failed attempts do not accumulate
+changes.
 
-On confirmed success, the original object's fields and ETag are updated in
-place and `mutate()` returns `None`. If it fails, the original object is left
-unchanged by the operation. As with other writes, a connection failure can
-leave the storage outcome unknown.
+Confirmed success updates the original object's fields and ETag in place and
+returns `None`. Failure leaves the original object unchanged by the operation.
+Connection failure may leave the storage outcome unknown.
 
-`attempts` is a positive integer counting total attempts, including the first;
-the default is three. Retries are immediate, without backoff. Exhaustion raises
-the last `ConflictError`. Other exceptions propagate without retrying, including
-callback exceptions other than `ConflictError`, validation and connection
-errors, and `KeyError` when a refresh finds the record missing. An initial
-object without an ETag raises `ValueError`.
+`attempts` is a positive integer counting total attempts, including the first.
+Default: three. Retries are immediate, without backoff. Exhaustion raises the
+last `ConflictError`.
 
-Edits made before `mutate()` participate in the first attempt, but only changes
-expressed by the functions are reapplied after a conflict. Put every change
-that must survive retries inside those functions. Functions may execute
-multiple times; keep external side effects outside them and perform those
-effects only after success.
+Only `ConflictError` triggers retry, including when raised by a callback. Other
+callback, validation, and connection errors propagate. A missing record during
+refresh raises `KeyError`. An initial object without an ETag raises
+`ValueError`.
 
-`mutate()` is a standalone operation. There is no `batch.mutate()`, and calling
-`record.mutate()` inside a commit block executes independently of that batch.
-Use [a retrying commit](commits.md#retrying-a-callable) to rerun coordinated reads,
-decisions, and writes.
+Unsaved edits participate only in the first attempt. Express changes in
+callbacks to reapply them after conflicts. Callbacks may run repeatedly;
+perform external side effects only after success.
+
+`mutate()` executes independently, including inside a commit block. There is no
+`batch.mutate()`. Use
+[Commit(operation).retry()](commits.md#retrying-a-callable) for coordinated
+reads, decisions, and writes.
