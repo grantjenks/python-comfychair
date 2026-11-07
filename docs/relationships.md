@@ -1,11 +1,11 @@
-# Relationships and exclusive ownership
+# Relationships and Exclusive Ownership
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
 Edges identify pairs. Multiple targets may share a source. Exclusive ownership
 requires an application workflow; edge types and orderings do not enforce it.
 
-## Email ownership
+## Email Ownership
 
 `Email` claims an address. `EmailOwner` relates it to a user. The
 [User model](example.md) stores a name, without a duplicated email field or
@@ -32,7 +32,7 @@ No `Ordering` is required. `first()` selects one edge, raising `KeyError` if
 absent unless `default` is supplied. The application maintains the one-owner
 invariant.
 
-## Concurrent creation
+## Concurrent Creation
 
 Create the email claim, user, and ownership edge in one commit. Addresses must
 already be normalized according to application rules.
@@ -59,7 +59,7 @@ without cancelling other writes.
 Directly adding ownership edges can violate the invariant. Deleting an edge
 does not release the email claim. Applications manage both lifecycles.
 
-## Swapping owners
+## Swapping Owners
 
 Requires distinct addresses and users with consistent existing ownership.
 Replace two edges; leave email and user nodes unchanged.

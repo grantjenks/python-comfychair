@@ -1,4 +1,4 @@
-# Choices and validation
+# Choices and Validation
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
@@ -9,7 +9,7 @@ hold Python enum members and serialize their underlying values. Enums are
 indexable when all values share a supported index type. Ordering follows
 values, not declaration order.
 
-## validate
+## Validate
 
 `record.validate()` checks field types, required values, choices, and index
 encodings without Redis access. Return `None` on success; raise
@@ -40,7 +40,7 @@ not validate.
 Existence and ETag conditions are checked atomically on Redis during execution,
 not by local validation.
 
-## Model definitions
+## Model Definitions
 
 Class creation raises `TypeError` for invalid declarations, including:
 

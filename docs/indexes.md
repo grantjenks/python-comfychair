@@ -1,4 +1,4 @@
-# Ordered indexes
+# Ordered Indexes
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
@@ -17,7 +17,7 @@ order and optional range bounds.
 Edge indexes are scoped to the source automatically. Omit the source from
 `Ordering` declarations.
 
-## Automatic primary traversal
+## Automatic Primary Traversal
 
 Nodes have a primary index on `key`; edges have one on `(source, target)`.
 Writes and deletes maintain these indexes with the record. No declaration is
@@ -55,7 +55,7 @@ edges for that source. Counts do not load model instances.
 
 Primary and declared indexes use the same [pagination rules](pagination.md).
 
-## Predicates and ranges
+## Predicates and Ranges
 
 `page()`, `iterate()`, `first()`, `last()`, and `count()` accept positional
 predicates. Multiple predicates mean AND; argument order is irrelevant.
@@ -99,7 +99,7 @@ separately; Python `and`, `or`, and chained comparisons such as
 values, such as `reservation.starts_at < reservation.ends_at`, retain ordinary
 Python behavior.
 
-## first and last
+## First and Last
 
 Return the first or last record in the requested order, including direction and
 primary-key tiebreaker. Access the corresponding index end without fetching
@@ -124,7 +124,7 @@ newest = Assignment.last(
 )
 ```
 
-## count
+## Count
 
 Return index membership count without loading model instances. Return zero for
 an empty scope.
@@ -150,7 +150,7 @@ containing `None`. If eligible indexes have different memberships, select one
 explicitly. Unsupported scopes raise an error without a fallback scan. Counts
 reflect current storage and may change before a later page request.
 
-## Indexed values
+## Indexed Values
 
 | Field type | Equality and ordering |
 | --- | --- |

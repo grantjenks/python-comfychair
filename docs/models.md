@@ -1,4 +1,4 @@
-# Models and fields
+# Models and Fields
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
@@ -44,7 +44,7 @@ class Account(Node):
 
 Primary lookup and ordered traversal by key are automatic.
 
-## Edge endpoints
+## Edge Endpoints
 
 `Edge[User, Task]` supplies `source` and `target` fields with the endpoint
 models' primary-key types. Both are `Key` values in the [example](example.md).
@@ -77,7 +77,7 @@ Source-scoped queries accept either form for the source. Reading edges or
 passing endpoint keys does not fetch nodes or check their existence. Reference
 wrappers, embedded model fields, and implicit fetches are not supported.
 
-## Generated keys
+## Generated Keys
 
 `Key` is an immutable, hashable, comparable identifier. `Key()` generates UUID7
 when available in the standard library (Python 3.14 and later), otherwise
@@ -106,7 +106,7 @@ generation time; ordering across generators or mixed UUID versions does not
 guarantee creation order. Use an `Ordering` on a timestamp field for time
 ordering.
 
-## Primary keys
+## Primary Keys
 
 Nodes use `key`; edges use `(source, target)`. Declare a different node key
 type to require a supplied identifier:
@@ -129,7 +129,7 @@ Do not change a stored record's key or an edge's endpoints. Identity is
 mutable: a subsequent write uses the new identity and may leave the old record
 and edges behind. It does not rename or move data.
 
-## Namespaces and storage identity
+## Namespaces and Storage Identity
 
 `namespace` is an optional model storage prefix:
 

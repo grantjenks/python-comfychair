@@ -67,7 +67,7 @@ the context manager.
 Converting a handle to `bool` raises `TypeError`. Use `removed.value`. Ignoring
 handles is permitted.
 
-## Capture and object state
+## Capture and Object State
 
 Queueing retains the operation, mode, and object reference. Normal context exit
 captures current identities, fields, and ETags, then validates and serializes
@@ -89,7 +89,7 @@ Confirmed writes update object ETags in place. Repeated successful writes
 through one object leave its ETag at the last such write. Writes do not return
 replacement objects. Discarding a batch does not undo Python edits.
 
-## Conditions apply to the whole batch
+## Conditions Apply to the Whole Batch
 
 Conditional batches check previously read versions with `IF_NOT_MODIFIED`:
 
@@ -143,7 +143,7 @@ and do not see queued writes; there is no local read-your-writes cache. Only
 versions supplied through `IF_NOT_MODIFIED` are checked. Other reads and query
 results are unprotected.
 
-## Retrying a callable
+## Retrying a Callable
 
 `Commit(operation).retry(attempts=3)` retries an operation on `ConflictError`.
 Construction does not execute the callable. Each attempt creates a fresh batch,

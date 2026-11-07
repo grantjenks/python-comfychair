@@ -1,4 +1,4 @@
-# Store and retrieve
+# Store and Retrieve
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
@@ -16,7 +16,7 @@ execute immediately. Queued writes use [Commit](commits.md) batch methods.
 | `record.add()` | `True` if inserted; `False` if the primary key exists. |
 | `record.delete()` or `Model.delete(key)` | `True` if deleted; `False` if absent. |
 
-## Missing records and defaults
+## Missing Records and Defaults
 
 `get()`, `first()`, and `last()` raise `KeyError` when no record matches. The
 keyword-only `default` argument returns the supplied object instead.
@@ -34,7 +34,7 @@ if result is missing:
 `default` applies only to absence. Query, connection, validation, and decoding
 errors propagate.
 
-## exists
+## Exists
 
 Return whether a primary key exists, without loading a model instance.
 Arguments follow `get()`.
@@ -44,7 +44,7 @@ has_user = User.exists(user.key)
 has_assignment = Assignment.exists(user.key, task.key)
 ```
 
-## refresh
+## Refresh
 
 Replace stored fields and ETag in place. Discard unsaved edits and return
 `None`. Raise `KeyError` if absent, leaving the object unchanged.
@@ -57,7 +57,7 @@ Related nodes are not loaded. Reads, including `exists()` and `refresh()`,
 observe current storage without reserving or locking records for subsequent
 writes.
 
-## get_or_create
+## Get or Create
 
 Retrieve a record by primary key or insert it if absent. Return
 `(record, created)`.
@@ -80,7 +80,7 @@ Concurrent calls for one primary key cannot create duplicates.
 
 `get_or_create()` executes immediately. It is not a batch method.
 
-## Write modes
+## Write Modes
 
 `set(mode=ALWAYS)` inserts or replaces a record, subject to the selected
 condition:
@@ -117,7 +117,7 @@ rechecked between operations. Sets then insert or replace in call order;
 `add()` remains insert-only at its position. See
 [batch conditions](commits.md#conditions-apply-to-the-whole-batch).
 
-## ETags and conditional updates
+## ETags and Conditional Updates
 
 `record.etag` holds an opaque random version token. Every successful insert or
 replacement generates a new ETag, including writes of unchanged values. Reads

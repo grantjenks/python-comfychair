@@ -18,12 +18,12 @@ configured Redis connection.
 ## Documentation
 
 - [Example](docs/example.md)
-- [Models and fields](docs/models.md)
-- [Store and retrieve](docs/storage.md)
-- [Ordered indexes](docs/indexes.md)
-- [Pages and cursors](docs/pagination.md)
+- [Models and Fields](docs/models.md)
+- [Store and Retrieve](docs/storage.md)
+- [Ordered Indexes](docs/indexes.md)
+- [Pages and Cursors](docs/pagination.md)
 - [Commits](docs/commits.md)
 - [Mutations](docs/mutations.md)
-- [Relationships and exclusive ownership](docs/relationships.md)
-- [Choices and validation](docs/validation.md)
+- [Relationships and Exclusive Ownership](docs/relationships.md)
+- [Choices and Validation](docs/validation.md)
 - [Serialization](docs/serialization.md)

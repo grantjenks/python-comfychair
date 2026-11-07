@@ -2,7 +2,7 @@
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
-## mutate
+## Mutate
 
 `record.mutate(callables, *, attempts=3)` applies a list of functions to a node
 or edge and saves with `IF_NOT_MODIFIED`. Each function modifies its argument

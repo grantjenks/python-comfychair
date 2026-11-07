@@ -1,4 +1,4 @@
-# Pages and cursors
+# Pages and Cursors
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
@@ -68,7 +68,7 @@ subsequent pages. New keys before the cursor are excluded from later primary
 traversal; keys after it may appear. Changes to ordering or filtering fields
 may skip or repeat records.
 
-## iterate
+## Iterate
 
 `iterate()` yields records and follows page cursors automatically.
 
