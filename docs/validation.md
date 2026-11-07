@@ -17,7 +17,9 @@ data. Values are not coerced.
 
 Storage operations additionally check required adapters and index encodings
 against the selected database before issuing storage commands. These checks
-do not depend on an override of `validate()`.
+do not depend on an override of `validate()`. Missing adapters raise
+`ValueError`; invalid index adapter output raises `ValidationError`. See
+[Errors and Arguments](errors.md).
 
 Override for cross-field rules. Call `super().validate()` to retain built-in
 checks.

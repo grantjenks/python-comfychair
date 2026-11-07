@@ -28,4 +28,5 @@ Namespaces distinguish model storage.
 - [Mutations](docs/mutations.md)
 - [Relationships and Exclusive Ownership](docs/relationships.md)
 - [Choices and Validation](docs/validation.md)
+- [Errors and Arguments](docs/errors.md)
 - [Serialization](docs/serialization.md)

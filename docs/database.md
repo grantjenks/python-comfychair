@@ -80,7 +80,7 @@ database = Database(
 | Command Retries | Disabled | Connection errors and timeouts propagate without replaying commands. |
 
 Timeouts accept positive finite numbers of seconds or `None` to disable the
-limit. Boolean, zero, negative, and non-finite values are invalid.
+limit. Zero, negative, and non-finite values are invalid.
 
 Credentials use the URL form `redis://username:password@host:port/database`;
 reserved characters must be percent-encoded. TLS verifies the server
@@ -207,8 +207,8 @@ Database selection follows this order:
 3. The model's default binding.
 4. The current default returned by `Database.default()`.
 
-Connection errors propagate from the selected database. They do not trigger
-fallback to another database.
+Backend failures raise `StorageError` from the selected database. They do not
+trigger fallback to another database. See [Errors and Arguments](errors.md).
 
 ## Instance State
 

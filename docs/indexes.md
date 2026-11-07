@@ -92,7 +92,7 @@ selected by `order_by` for traversal. Lower and upper bounds are independently
 optional and may be inclusive or exclusive. `order_by` accepts a field
 descriptor; `reverse=True` selects descending order.
 
-Unsupported queries raise an error. Scans, Python-side filtering, index
+Unsupported queries raise `UnsupportedQueryError`. Scans, Python-side filtering, index
 intersections, `!=`, OR, field-to-field comparisons, and arithmetic expressions
 are not supported.
 
@@ -101,6 +101,26 @@ separately; Python `and`, `or`, and chained comparisons such as
 `start <= Assignment.created_at < end` are invalid. Comparisons of instance
 values, such as `reservation.starts_at < reservation.ends_at`, retain ordinary
 Python behavior.
+
+## Contradictory Filters
+
+Contradictory predicates on a supported index produce an empty result:
+
+```python
+page = Assignment.page(
+    user,
+    Assignment.priority >= 10,
+    Assignment.priority < 5,
+    order_by=Assignment.priority,
+)
+
+assert len(page) == 0
+assert page.cursor is None
+```
+
+`iterate()` yields nothing and `count()` returns zero. `first()` and `last()`
+raise `KeyError` or return the supplied `default`. Index support and operand
+validity are checked before treating a query as empty.
 
 ## First and Last
 
@@ -150,7 +170,8 @@ open_count = Assignment.count(
 
 Primary indexes include every record in scope. Secondary indexes omit entries
 containing `None`. If eligible indexes have different memberships, select one
-explicitly. Unsupported scopes raise an error without a fallback scan. Counts
+explicitly. Unsupported scopes raise `UnsupportedQueryError` without a fallback
+scan. Counts
 reflect current storage and may change before a later page request.
 
 ## Indexed Values

@@ -9,7 +9,8 @@
 
 `page()` returns a materialized, read-only sequence. Iteration, indexing,
 slicing, and `len(page)` require no further requests. Length counts fetched
-records, not all query matches.
+records, not all query matches. `limit` must be a positive integer; see
+[Arguments](errors.md#arguments).
 
 Primary traversal:
 
@@ -54,12 +55,13 @@ if page.cursor is not None:
 ## Cursors
 
 `page.cursor` is an opaque, serializable continuation token; `None` indicates
-exhaustion. Omitting `cursor` starts at the beginning.
+exhaustion. Omitting `cursor` or passing `None` starts at the beginning.
 
 Continuation requires the same namespace, model, source, filters, ordering, and
 direction. Equivalent predicates identify the same query regardless of object
 identity or argument order. A cursor is invalid for a different query or
-incompatible index definition.
+incompatible index definition. Malformed or incompatible cursors raise
+`InvalidCursorError`.
 
 Continuation is exclusive: after the last primary key for nodes, the last
 target key within a source for edges, or the last ordering value and
@@ -95,7 +97,8 @@ for assignment in Assignment.iterate(
     print(assignment.target, assignment.priority)
 ```
 
-Iteration is lazy. The first fetch occurs when iteration starts; subsequent
+`batch_size` is checked when `iterate()` is called. Iteration is lazy. The
+first fetch occurs when iteration starts; subsequent
 pages are fetched as needed until exhaustion. An empty query yields nothing.
 Stopping iteration makes no further requests, although the current page may
 already be buffered.

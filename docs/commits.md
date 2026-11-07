@@ -85,7 +85,7 @@ handles is permitted.
 
 Queueing retains the operation, mode, and object reference. Normal context exit
 captures current identities, fields, and ETags, then validates and serializes
-all captured values before writing.
+all captured values before writing. Unsupported modes are rejected when queued.
 
 ```python
 with Commit() as batch:
@@ -182,7 +182,8 @@ commit.
 A `ConflictError` from the callable or commit discards that attempt's queued
 work and return value, then retries with a fresh batch. `attempts` is a
 positive integer counting total executions, including the first. Default:
-three. Retries are immediate, without backoff.
+three. Retries are immediate, without backoff. See
+[Arguments](errors.md#arguments).
 
 Exhaustion raises the last `ConflictError`. Other exceptions propagate without
 retry, including validation errors, `KeyError`, and connection failures with
@@ -237,8 +238,9 @@ Mode conflicts precede writes. Arbitrary execution errors do not imply rollback
 or absence of writes; Redis provides no general rollback. Individual record
 operations must still maintain their indexes.
 
-Connection loss may leave commit outcome unknown. Persistence and failover
-durability depend on the Redis deployment.
+Backend failures raise `StorageError`. Connection loss may leave commit outcome
+unknown; result handles remain unresolved. Persistence and failover durability
+depend on the Redis deployment. See [Storage Failures](errors.md#storage-failures).
 
 Execution constraints:
 [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/),
