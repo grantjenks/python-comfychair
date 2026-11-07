@@ -32,6 +32,14 @@ Normal exit commits. An exception escaping the block before commit discards
 queued operations. `Commit()` makes one attempt;
 [the callable form](#retrying-a-callable) supports retries.
 
+## Database Selection
+
+`Commit(using=database)` directs every queued operation to one database.
+Without `using`, records and model defaults must resolve to the same database;
+otherwise the batch is rejected before writing. Empty batches are no-ops.
+Batch methods do not accept `using`. Ordinary calls inside the block retain
+their own database selection. See [Commit Routing](database.md#commit-routing).
+
 ## Result
 
 Each queued operation returns a `Result[T]`. Its `.value` is available only
@@ -194,6 +202,21 @@ results from later attempts.
 Callables may execute repeatedly. Perform external side effects after success.
 Immediate writes inside the callable remain independent; failed batches do not
 undo them. Retrying does not undo changes to Python objects outside the batch.
+
+The callable form also accepts an explicit database:
+
+```python
+def update_user(batch):
+    user = User.get(user_key, using=archive)
+    user.name = "Alice"
+    batch.set(user, mode=IF_NOT_MODIFIED)
+
+
+Commit(update_user, using=archive).retry(attempts=3)
+```
+
+Selecting a batch database does not change the database used by ordinary model
+calls in the callable.
 
 ## Limits
 

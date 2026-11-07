@@ -18,6 +18,7 @@ configured Redis connection.
 ## Documentation
 
 - [Example](docs/example.md)
+- [Database Configuration](docs/database.md)
 - [Models and Fields](docs/models.md)
 - [Store and Retrieve](docs/storage.md)
 - [Ordered Indexes](docs/indexes.md)

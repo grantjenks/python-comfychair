@@ -16,6 +16,10 @@ execute immediately. Queued writes use [Commit](commits.md) batch methods.
 | `record.add()` | `True` if inserted; `False` if the primary key exists. |
 | `record.delete()` or `Model.delete(key)` | `True` if deleted; `False` if absent. |
 
+All storage methods accept keyword-only `using`. Selection uses the explicit
+database, then the instance's remembered database, then the model default.
+See [Database Configuration](database.md).
+
 ## Missing Records and Defaults
 
 `get()`, `first()`, and `last()` raise `KeyError` when no record matches. The
@@ -142,6 +146,9 @@ Queued operations capture and check ETags at context exit.
 
 `set()` and `delete()` do not retry conflicts. Reload before reapplying
 changes, or use [mutate()](mutations.md).
+
+Conditional writes require an ETag from the selected database. See
+[Instance State](database.md#instance-state).
 
 ## Deletion
 

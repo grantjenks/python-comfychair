@@ -2,6 +2,9 @@
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
+`page()` and `iterate()` accept keyword-only `using`. See
+[Database Configuration](database.md).
+
 ## Page
 
 `page()` returns a materialized, read-only sequence. Iteration, indexing,
@@ -77,8 +80,8 @@ for user in User.iterate(batch_size=100):
     print(user.key, user.name)
 ```
 
-Arguments follow `page()` for source, predicates, `order_by`, `reverse`, and
-optional starting `cursor`. `batch_size` replaces `limit`: a positive integer
+Arguments follow `page()` for source, predicates, `order_by`, `reverse`,
+`using`, and optional starting `cursor`. `batch_size` replaces `limit`: a positive integer
 controlling records fetched per request, not total results.
 
 ```python

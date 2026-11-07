@@ -2,6 +2,9 @@
 
 [Documentation](../README.md#documentation) · [Example models](example.md)
 
+Queries accept keyword-only `using` to select a database. See
+[Database Configuration](database.md).
+
 ## Ordering
 
 Declare indexes with field descriptors. Duplicate values are supported.

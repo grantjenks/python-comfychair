@@ -2,7 +2,7 @@
 
 [Documentation](../README.md#documentation)
 
-Requires a configured Redis connection.
+Configure a database after declaring the models.
 
 ## Models
 
@@ -43,6 +43,19 @@ class Assignment(Edge[User, Task]):
         Ordering(status, created_at),
     )
 ```
+
+## Database
+
+```python
+from comfychair import Database
+
+
+database = Database("redis://localhost:6379/0")
+database.bind(User, Task, Assignment)
+```
+
+See [Database Configuration](database.md) for explicit selection and multiple
+databases.
 
 ## Writes
 
