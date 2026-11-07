@@ -99,9 +99,28 @@ with Commit() as batch:
 Repeated sets of one object all use its values at context exit. Model-and-key
 deletes retain the supplied identity arguments.
 
-Confirmed writes update object ETags in place. Repeated successful writes
-through one object leave its ETag at the last such write. Writes do not return
-replacement objects. Discarding a batch does not undo Python edits.
+After the whole commit is confirmed, apply instance ETag updates in execution
+order. Inserts and replacements assign their new ETags. Instance deletes clear
+the ETag, including deletes returning `False`.
+
+| Operations Through One Instance | Final ETag |
+| --- | --- |
+| Set, then delete | `None`. |
+| Delete, then set | ETag from the set. |
+| Two sets | ETag from the second set. |
+| Two deletes | `None`. |
+
+These local updates do not affect the batch's initial-state condition checks.
+A failed condition or unconfirmed outcome leaves local ETags and database
+associations unchanged.
+
+Updates apply only to the instances passed to operations. Model-and-key
+deletion does not clear another object's ETag, even when that object was used
+elsewhere in the batch. Separate instances for the same identity are not
+synchronized.
+
+Writes do not return replacement objects. Discarding a batch does not undo
+Python edits.
 
 ## Conditions Apply to the Whole Batch
 

@@ -112,7 +112,9 @@ generates a new ETag.
 
 `Model.from_json(value)` accepts a string or UTF-8 bytes and reconstructs
 identity, fields, and the ETag without saving or associating the instance with
-a database.
+a database. It uses the normal
+[construction path](models.md#construction-and-loading), including defaults for
+missing optional fields.
 
 ```python
 text = product.to_json()

@@ -213,8 +213,10 @@ trigger fallback to another database. See [Errors and Arguments](errors.md).
 ## Instance State
 
 A successful read or confirmed write associates the instance with its database.
-Failed operations leave the association unchanged. `refresh()` and `mutate()`
-use the same selection rules.
+A confirmed instance delete also selects that association, including when the
+record was already absent; it clears the ETag while retaining keys and fields.
+Failed or unconfirmed operations leave the association unchanged. `refresh()`
+and `mutate()` use the same selection rules.
 
 Each instance carries one database association and one ETag. Load separate
 instances to work independently with records in different databases:

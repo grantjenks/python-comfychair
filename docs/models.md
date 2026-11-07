@@ -27,6 +27,43 @@ task.created_at                  # datetime value on a Task instance
 Task.created_at >= start         # Query predicate
 ```
 
+## Construction and Loading
+
+Construction applies defaults and default factories without storage access.
+It does not automatically call `validate()`.
+
+Loading decodes stored fields, checks required fields and identity, and calls
+the model's normal constructor with decoded keyword arguments. The stored ETag
+and database association are attached after construction. Missing optional
+fields use their defaults or factories; present fields do not invoke factories.
+Loading never generates replacement identity.
+
+Constructor overrides observe both application construction and loading:
+
+```python
+constructed = 0
+
+
+class Task(Node):
+    title: str
+
+    def __init__(self, **fields):
+        super().__init__(**fields)
+        global constructed
+        constructed += 1
+```
+
+`get()` constructs the returned model. `exists()` and `count()` do not
+construct model instances. Reading an edge constructs the edge without
+constructing its endpoint nodes.
+
+Constructor overrides must accept the declared keyword fields. Avoid side
+effects that assume the record is new. There are no additional lifecycle hooks.
+
+Reads reconstruct declared types but do not automatically call `validate()`.
+Application validation runs explicitly or before writing. See
+[Choices and Validation](validation.md).
+
 ## Node
 
 `Node` supplies `key: Key`. Omitting the key generates a new `Key` at
@@ -72,10 +109,21 @@ assert assignment.source == user.key
 assert assignment.target == task.key
 ```
 
+Model instances must match the declared endpoint model or a subclass.
+An instance of another model raises `TypeError`:
+
+```python
+Assignment(source=task, target=user)  # TypeError: wrong endpoint models.
+```
+
 Edge methods accept endpoint keys or corresponding model instances.
-Source-scoped queries accept either form for the source. Reading edges or
-passing endpoint keys does not fetch nodes or check their existence. Reference
-wrappers, embedded model fields, and implicit fetches are not supported.
+Source-scoped queries accept either form for the source. The same endpoint
+checks apply to constructors, `get()`, `delete()`, and source-scoped queries.
+
+Raw keys follow the declared key type without establishing model ownership.
+Reading edges or passing endpoint keys does not fetch nodes, check existence,
+or compare endpoint namespaces. Reference wrappers, embedded model fields, and
+implicit fetches are not supported.
 
 ## Generated Keys
 

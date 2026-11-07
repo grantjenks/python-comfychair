@@ -51,8 +51,11 @@ has_assignment = Assignment.exists(user.key, task.key)
 
 ## Refresh
 
-Replace stored fields and ETag in place. Discard unsaved edits and return
-`None`. Raise `KeyError` if absent, leaving the object unchanged.
+Load a replacement through the normal
+[construction path](models.md#construction-and-loading), then copy its stored
+fields and ETag into the existing instance. Discard unsaved edits and return
+`None`. Raise `KeyError` if absent. Any loading failure leaves the existing
+instance unchanged.
 
 ```python
 task.refresh()
@@ -183,6 +186,23 @@ with `IF_NOT_MODIFIED` raise `ValueError`. Deletion with `IF_MISSING` or
 Batch deletion checks conditions against the initial stored state. Its result
 reflects execution order and may be `False` after an earlier deletion in the
 batch.
+
+After a confirmed instance deletion, keep its key and field values, clear
+`etag` to `None`, and associate it with the selected database. This also
+applies when `ALWAYS` returns `False` because the record is absent.
+
+```python
+deleted = task.delete()
+assert task.etag is None
+```
+
+An ordinary `set()` can recreate the record. `IF_NOT_MODIFIED` requires an
+ETag again. A failed condition or unconfirmed storage outcome leaves local
+state unchanged.
+
+Model-and-key deletion does not update loaded instances. There is no identity
+map; those instances retain their previous fields and ETags. Batch operations
+follow the same [instance state rules](commits.md#capture-and-object-state).
 
 Deletion does not cascade. Node deletion preserves incoming and outgoing edges;
 edge deletion preserves endpoint nodes. Only the deleted record's index entries

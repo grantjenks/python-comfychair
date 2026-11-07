@@ -41,7 +41,9 @@ class Reservation(Node):
 `set()`, `add()`, and creation through `get_or_create()` validate before
 writing. Each `mutate()` attempt validates its result. Commits validate
 captured values at context exit before any writes. Field assignment alone does
-not validate.
+not validate. Construction and reads do not automatically call `validate()`.
+Decoding still checks the stored representation and reconstructs declared
+types. See [Construction and Loading](models.md#construction-and-loading).
 
 Existence and ETag conditions are checked atomically on Redis during execution,
 not by local validation.
