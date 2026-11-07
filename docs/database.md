@@ -11,6 +11,14 @@ optional. Redis must be running; Comfy Chair does not start a server.
 The implicit connection is opened on first storage access. Importing the
 package, declaring models, and constructing records perform no connection I/O.
 
+`Database.default()` returns the shared default database object for the current
+process without connecting. `Database()` creates a separate object with the
+default localhost settings; it does not replace the implicit default.
+
+```python
+Database.default().close()
+```
+
 ## Database
 
 `Database` identifies a storage connection. Pass database objects to `using`;
@@ -80,6 +88,37 @@ Automatic command replay is disabled to avoid repeating writes with uncertain
 outcomes. Explicit `mutate()` and `Commit(operation).retry()` retries remain
 limited to `ConflictError`.
 
+## Ownership
+
+Comfy Chair owns clients it creates, including the implicit default client.
+Application-supplied clients remain application-owned. Comfy Chair never
+closes or reconfigures a supplied client.
+
+## Close
+
+`database.close()` releases owned connections and returns `None`. Closing an
+unopened or already closed database is a no-op. Later storage operations
+reconnect lazily. Bindings and instance database associations remain unchanged.
+
+For a supplied client, `close()` leaves the client open. Applications finish
+outstanding operations before closing; there is no draining or cancellation.
+
+## Context Managers
+
+Entering a database context returns the database without connecting. Exiting
+calls `close()`, including when the block raises.
+
+```python
+with Database("redis://localhost:6379/0") as database:
+    database.bind(User, Task, Assignment)
+    user = User(name="Alice")
+    user.set()
+```
+
+The context manages connection lifetime only. It does not select an ambient
+database, create a commit, or undo bindings. Nested contexts each call
+`close()` on exit; subsequent operations can reopen connections.
+
 ## Bind
 
 `database.bind(*models)` supplies the default database for each node or edge
@@ -89,6 +128,23 @@ definition can store independent records in multiple databases.
 An unbound model uses the implicit default unless `using` or an instance's
 remembered database selects another connection. Constructing model instances
 requires no binding.
+
+Rebinding replaces the model default without I/O. Binding to the current
+default is a no-op. Existing instance associations remain unchanged; no records
+are copied or migrated.
+
+```python
+primary.bind(User)
+user = User.get(user_key)
+
+archive.bind(User)
+
+another = User.get(user_key)  # Archive.
+user.refresh()               # Primary.
+```
+
+Configure bindings at startup. Concurrent rebinding during operations is
+unsupported.
 
 ## Using
 
@@ -140,9 +196,10 @@ Writing an instance to another database preserves its key and applies the
 selected write mode. It does not move or delete the original record. A
 confirmed write updates the instance's database association and ETag.
 
-`IF_NOT_MODIFIED` requires an ETag obtained from the selected database. An ETag
-from another database cannot authorize a conditional set or delete. This
-requirement also applies to `mutate()` and queued conditional operations.
+`IF_NOT_MODIFIED` compares the object's ETag with the stored record in the
+selected database. A mismatch or absent record raises `ConflictError`. ETags
+are not restricted by the identity of the `Database` object that read them.
+These rules also apply to `mutate()` and queued conditional operations.
 
 ## Edges
 
@@ -173,8 +230,25 @@ with Commit(using=archive) as batch:
 Without `using`, resolve each operation through its record's association,
 model binding, then the implicit default. Model-and-key deletes use the model
 binding or implicit default. All operations must resolve to the same database;
-conflicting selections reject the batch before writing. Unconfigured models
+conflicting selections reject the batch before writing. Database selection
+uses object identity: separate `Database` objects remain distinct even when
+their URLs match. Reuse one object or select `Commit(using=database)` explicitly.
+Unconfigured models
 share the implicit default, so `Commit()` needs no setup. An empty batch is a
 no-op.
 
 `Commit(operation, using=database).retry(attempts=3)` applies the selected database to each attempt's batch. Ordinary reads and writes inside the callable remain independent and require their own database selection. See [Retrying a Callable](commits.md#retrying-a-callable).
+
+## Concurrency
+
+Database objects may be shared between threads. Owned clients use connection
+pooling. Model instances have no synchronization; applications protect
+concurrent mutation.
+
+The API is synchronous. Async applications must arrange execution without
+blocking their event loop.
+
+Create explicit databases and supplied clients inside each worker process.
+Sharing live connections across processes is unsupported. The implicit default
+is process-local. Supplied clients must support the application's intended
+concurrency.

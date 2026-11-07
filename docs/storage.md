@@ -148,7 +148,8 @@ Queued operations capture and check ETags at context exit.
 `set()` and `delete()` do not retry conflicts. Reload before reapplying
 changes, or use [mutate()](mutations.md).
 
-Conditional writes require an ETag from the selected database. See
+Conditional writes compare the object's ETag with the record in the selected
+database, without restricting which `Database` object read the ETag. See
 [Instance State](database.md#instance-state).
 
 ## Deletion

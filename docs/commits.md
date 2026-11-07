@@ -38,6 +38,9 @@ queued operations. `Commit()` makes one attempt;
 Without `using`, resolve records through their database associations, model
 bindings, then the implicit localhost default. Conflicting selections reject
 the batch before writing. Unconfigured models share the implicit default.
+Selection uses `Database` object identity, even for objects with the same URL.
+Reuse one object or select `using` explicitly. ETag checks compare tokens in
+the selected database without checking which connection read them.
 Empty batches are no-ops.
 Batch methods do not accept `using`. Ordinary calls inside the block retain
 their own database selection. See [Commit Routing](database.md#commit-routing).
