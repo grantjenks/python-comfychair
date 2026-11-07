@@ -28,6 +28,58 @@ archive = Database("redis://localhost:6379/1")
 primary.bind(User, Task, Assignment)
 ```
 
+## Connection Settings
+
+`Database()` uses `redis://localhost:6379/0`. URL-based construction accepts
+keyword-only `connect_timeout` and `timeout` arguments:
+
+```python
+database = Database(
+    "redis://localhost:6379/0",
+    connect_timeout=5.0,
+    timeout=5.0,
+)
+```
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| URL | `redis://localhost:6379/0` | Host, port, database number, and optional credentials. |
+| `connect_timeout` | `5.0` seconds | Socket connection timeout. |
+| `timeout` | `5.0` seconds | Socket I/O timeout, not a deadline for the whole operation. |
+| Authentication | None | Username and password may be supplied in the URL. |
+| TLS | Determined by URL scheme | `redis://` uses TCP; `rediss://` uses TLS. |
+| Command Retries | Disabled | Connection errors and timeouts propagate without replaying commands. |
+
+Timeouts accept positive finite numbers of seconds or `None` to disable the
+limit. Boolean, zero, negative, and non-finite values are invalid.
+
+Credentials use the URL form `redis://username:password@host:port/database`;
+reserved characters must be percent-encoded. TLS verifies the server
+certificate and hostname using system trust roots. URL-based construction
+does not expose an option to disable verification.
+
+URL query options and arbitrary backend keyword arguments are not supported.
+Use a configured client for custom certificates, credential providers, or
+other backend-specific settings.
+
+## Supplied Clients
+
+`Database(client=redis_client)` uses an existing synchronous Redis client.
+The client argument is mutually exclusive with an explicit URL or connection
+options:
+
+```python
+database = Database(client=redis_client)
+```
+
+Comfy Chair does not change the client's connection settings. The supplied
+client must return binary responses and have automatic command retries
+disabled. Wrapping it performs no I/O; it may already have open connections.
+
+Automatic command replay is disabled to avoid repeating writes with uncertain
+outcomes. Explicit `mutate()` and `Commit(operation).retry()` retries remain
+limited to `ConflictError`.
+
 ## Bind
 
 `database.bind(*models)` supplies the default database for each node or edge
