@@ -32,14 +32,17 @@ ETag with the stored record in that database; the reading `Database` object's
 identity does not restrict the comparison. See
 [Database Configuration](database.md).
 
-The first attempt uses a working copy of the object's current fields and ETag.
+The first attempt uses an independent [working copy](#working-copies) of the
+object's current fields and ETag.
 Functions run in supplied order, followed by validation, serialization, and
 conditional write. On `ConflictError`, fetch the current stored record and
 replay the functions on a fresh working copy. Failed attempts do not accumulate
 changes.
 
-Confirmed success updates the original object's fields and ETag in place and
-returns `None`. Failure leaves the original object unchanged by the operation.
+Confirmed success transfers the working fields and new ETag to the original
+object in place and returns `None`. Callbacks and construction are not repeated
+after confirmation. Failure leaves the original object unchanged by the
+operation.
 Backend failures raise `StorageError`; connection failure may leave the storage
 outcome unknown.
 
@@ -47,8 +50,9 @@ outcome unknown.
 Default: three. Retries are immediate, without backoff. Exhaustion raises the
 last `ConflictError`. See [Arguments](errors.md#arguments).
 
-Only `ConflictError` triggers retry, including when raised by a callback. Other
-callback, validation, and connection errors propagate. A missing record during
+Only `ConflictError` triggers retry, whether raised by the conditional write,
+directly by a callback, or by an operation the callback invokes. Its origin is
+not distinguished. Other exceptions propagate immediately. A missing record during
 refresh raises `KeyError`. An initial object without an ETag raises
 `ValueError`.
 
@@ -60,3 +64,24 @@ perform external side effects only after success.
 `batch.mutate()`. Use
 [Commit(operation).retry()](commits.md#retrying-a-callable) for coordinated
 reads, decisions, and writes.
+
+## Working Copies
+
+Callbacks operate on independent field values, including nested lists,
+dictionaries, and mutable custom values. Changes to the working instance do not
+alter the original instance before a confirmed save.
+
+Declared field values are deep-copied together, preserving shared references
+within the copied fields. The working instance uses the normal constructor and
+retains the relevant ETag and database association. Connections and adapter
+registries are not copied.
+
+Custom types follow Python's deep-copy protocol, including `__deepcopy__`.
+Immutable values may be shared; mutable values must provide independent
+copies. Copying failures propagate before callbacks or writes. Copying does
+not use a serialization round trip or a separate adapter registry.
+
+After a conflict, the next working copy starts from freshly loaded storage,
+not the previous attempt. Isolation applies to the supplied working instance;
+callbacks remain responsible for changes to globals, closed-over objects, and
+external storage.

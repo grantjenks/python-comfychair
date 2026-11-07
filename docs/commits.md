@@ -194,12 +194,14 @@ reviewed_key = Commit(mark_reviewed).retry(attempts=3)
 ```
 
 Put reads, decisions, and object construction inside the callable when they
-must repeat. Closed-over objects retain their existing state; retry does not
-refresh them. Queue writes on the supplied batch without opening another
-commit.
+must repeat. Retry does not copy arguments, closures, or queued objects, and
+does not refresh closed-over instances. Queue writes on the supplied batch
+without opening another commit.
 
 A `ConflictError` from the callable or commit discards that attempt's queued
-work and return value, then retries with a fresh batch. `attempts` is a
+work and return value, then retries with a fresh batch. This includes conflicts
+raised directly by application code or by an operation it invokes; the origin
+is not distinguished. `attempts` is a
 positive integer counting total executions, including the first. Default:
 three. Retries are immediate, without backoff. See
 [Arguments](errors.md#arguments).
