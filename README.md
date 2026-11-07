@@ -12,8 +12,8 @@ fields. Primary indexes support lookup and ordered traversal; declared
 orderings support queries on other fields. Edge queries are scoped to a source.
 Namespaces distinguish model storage.
 
-**Status:** API design. No implementation is available. Examples assume a
-configured Redis connection.
+**Status:** API design. No implementation is available. Examples use Redis at
+`redis://localhost:6379/0` unless a database is selected explicitly.
 
 ## Documentation
 

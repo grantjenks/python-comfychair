@@ -22,8 +22,8 @@ assignment.mutate([increase_priority, reopen], attempts=3)
 ```
 
 `using` selects the database for the conditional write and retry reads.
-Omission uses the instance's database, then the model default. The initial
-ETag must come from the selected database. See
+Omission uses the instance's database, then the model binding, then the
+implicit localhost default. The initial ETag must come from the selected database. See
 [Database Configuration](database.md).
 
 The first attempt uses a working copy of the object's current fields and ETag.

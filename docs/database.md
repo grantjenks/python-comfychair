@@ -2,6 +2,15 @@
 
 [Documentation](../README.md#documentation) · [Example Models](example.md)
 
+## Default Database
+
+Without configuration, operations use `redis://localhost:6379/0`: Redis on
+localhost, port 6379, database 0. Creating a `Database` or binding models is
+optional. Redis must be running; Comfy Chair does not start a server.
+
+The implicit connection is opened on first storage access. Importing the
+package, declaring models, and constructing records perform no connection I/O.
+
 ## Database
 
 `Database` identifies a storage connection. Pass database objects to `using`;
@@ -22,9 +31,9 @@ primary.bind(User, Task, Assignment)
 model. Binding does not restrict the model to that database. The same model
 definition can store independent records in multiple databases.
 
-An unbound model requires an explicit `using` argument or, for instance
-operations, a remembered database. Otherwise, storage operations raise a
-configuration error. Constructing model instances requires no binding.
+An unbound model uses the implicit default unless `using` or an instance's
+remembered database selects another connection. Constructing model instances
+requires no binding.
 
 ## Using
 
@@ -53,7 +62,10 @@ Database selection follows this order:
 1. Explicit `using`.
 2. The instance's remembered database, for instance operations.
 3. The model's default binding.
-4. A configuration error.
+4. The implicit default at `redis://localhost:6379/0`.
+
+Connection errors propagate from the selected database. They do not trigger
+fallback to another database.
 
 ## Instance State
 
@@ -103,9 +115,11 @@ with Commit(using=archive) as batch:
     batch.set(assignment)
 ```
 
-Without `using`, infer the database from queued records' associations and model
-defaults. Model-and-key deletes use the model default. All operations must
-resolve to the same database; missing or conflicting selections reject the
-batch before writing. An empty batch is a no-op.
+Without `using`, resolve each operation through its record's association,
+model binding, then the implicit default. Model-and-key deletes use the model
+binding or implicit default. All operations must resolve to the same database;
+conflicting selections reject the batch before writing. Unconfigured models
+share the implicit default, so `Commit()` needs no setup. An empty batch is a
+no-op.
 
 `Commit(operation, using=database).retry(attempts=3)` applies the selected database to each attempt's batch. Ordinary reads and writes inside the callable remain independent and require their own database selection. See [Retrying a Callable](commits.md#retrying-a-callable).

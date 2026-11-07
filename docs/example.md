@@ -2,7 +2,8 @@
 
 [Documentation](../README.md#documentation)
 
-Configure a database after declaring the models.
+Uses Redis at `redis://localhost:6379/0`; no connection setup is required.
+See [Database Configuration](database.md) to select another database.
 
 ## Models
 
@@ -43,19 +44,6 @@ class Assignment(Edge[User, Task]):
         Ordering(status, created_at),
     )
 ```
-
-## Database
-
-```python
-from comfychair import Database
-
-
-database = Database("redis://localhost:6379/0")
-database.bind(User, Task, Assignment)
-```
-
-See [Database Configuration](database.md) for explicit selection and multiple
-databases.
 
 ## Writes
 

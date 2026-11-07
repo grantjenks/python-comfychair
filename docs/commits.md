@@ -35,8 +35,10 @@ queued operations. `Commit()` makes one attempt;
 ## Database Selection
 
 `Commit(using=database)` directs every queued operation to one database.
-Without `using`, records and model defaults must resolve to the same database;
-otherwise the batch is rejected before writing. Empty batches are no-ops.
+Without `using`, resolve records through their database associations, model
+bindings, then the implicit localhost default. Conflicting selections reject
+the batch before writing. Unconfigured models share the implicit default.
+Empty batches are no-ops.
 Batch methods do not accept `using`. Ordinary calls inside the block retain
 their own database selection. See [Commit Routing](database.md#commit-routing).
 
