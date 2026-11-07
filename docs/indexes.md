@@ -149,8 +149,8 @@ newest = Assignment.last(
 
 ## Count
 
-Return index membership count without loading model instances. Return zero for
-an empty scope.
+Return index membership count without decoding records or constructing model
+instances. Return zero for an empty scope.
 
 ```python
 open_count = Assignment.count(user, Assignment.status == "open")

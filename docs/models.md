@@ -55,7 +55,8 @@ class Task(Node):
 
 `get()` constructs the returned model. `exists()` and `count()` do not
 construct model instances. Reading an edge constructs the edge without
-constructing its endpoint nodes.
+constructing its endpoint nodes. See
+[Materialization](pagination.md#materialization) for read-operation bounds.
 
 Constructor overrides must accept the declared keyword fields. Avoid side
 effects that assume the record is new. There are no additional lifecycle hooks.

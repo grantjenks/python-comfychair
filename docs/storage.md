@@ -41,8 +41,8 @@ errors propagate.
 
 ## Exists
 
-Return whether a primary key exists, without loading a model instance.
-Arguments follow `get()`.
+Return whether a primary key exists, without decoding a record or constructing
+a model instance. Arguments follow `get()`.
 
 ```python
 has_user = User.exists(user.key)
