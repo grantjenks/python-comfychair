@@ -16,6 +16,9 @@ package, declaring models, and constructing records perform no connection I/O.
 `Database` identifies a storage connection. Pass database objects to `using`;
 string aliases are not supported.
 
+Explicit databases open lazily on first storage access. `Database(...)` and
+`database.bind(...)` perform no connection I/O.
+
 ```python
 from comfychair import Database
 
