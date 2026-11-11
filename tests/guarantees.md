@@ -45,8 +45,12 @@ This transport scenario has no implemented harness yet.
 
 ## Race Primary Creation
 
-Coordinate independent real clients with barriers/events rather than sleeps.
-Get-or-create must produce one stored record: the winner returns created=True,
+[Store and Retrieve](storage.md#create-from-competing-requests) starts competing
+requests on independent connections. It asserts one winner and consistent
+returned values without selecting which request wins. A barrier at the client
+does not force every relevant storage interleaving.
+
+Use controlled schedules for stronger concurrency checks. Get-or-create must produce one stored record: the winner returns created=True,
 others return that record with created=False. Existing fields and ETag remain
 unchanged. Creation defaults cannot overwrite identity. The email workflow's
 IF_MISSING conflict behavior differs from get-or-create and add.

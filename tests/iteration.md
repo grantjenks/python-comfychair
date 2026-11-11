@@ -42,13 +42,15 @@ measurements. Constructor observations concern model loading, not backend scans.
 
 ## Count Without Loading
 
+    >>> loaded.clear()
     >>> Item.count()
     3
     >>> loaded
     []
 
-## Load Only an Endpoint
+## Load Only the Last Record
 
+    >>> loaded.clear()
     >>> item = Item.last()
     >>> loaded
     ['c']
@@ -60,7 +62,7 @@ measurements. Constructor observations concern model loading, not backend scans.
     >>> loaded
     ['a', 'b']
 
-## Begin Lazily
+## Defer Loading Until Consumption
 
     >>> loaded.clear()
     >>> items = Item.iterate(batch_size=2)

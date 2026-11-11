@@ -42,6 +42,28 @@ All mode conditions use storage immediately before batch writes, not context
 entry. ALWAYS has no condition; IF_MISSING requires absence; IF_EXISTS requires
 presence; IF_NOT_MODIFIED requires presence and a matching ETag.
 
+## Check Conditions at Execution
+
+The key is absent when the operation is queued. An independent write before
+context exit makes the condition fail. The immediate write remains; neither
+queued write takes effect.
+
+    >>> queued = Task(title='Queued')
+    >>> extra = Task(title='Also queued')
+    >>> with raises(ConflictError):
+    ...     with Commit() as batch:
+    ...         pending = batch.set(extra)
+    ...         _ = batch.set(queued, mode=IF_MISSING)
+    ...         Task(key=queued.key, title='Immediate').set()
+    >>> Task.get(queued.key).title
+    'Immediate'
+    >>> Task.exists(extra.key)
+    False
+    >>> queued.etag is None and extra.etag is None
+    True
+    >>> with raises(CommitError):
+    ...     _ = pending.value
+
 ## Set Then Delete With the Same ETag
 
     >>> task = Task(title='Before')
@@ -105,6 +127,8 @@ return replacement objects. Local updates do not affect initial-state checks.
 
 ## Reject the Entire Batch on Conflict
 
+    >>> task = Task(title='Original')
+    >>> task.set()
     >>> stale = Task.get(task.key)
     >>> stale_etag = stale.etag
     >>> task.set()

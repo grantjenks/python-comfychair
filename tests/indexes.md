@@ -5,7 +5,8 @@ Source: [Ordered Indexes](../docs/indexes.md).
 ## Setup
 
     >>> from pytest import raises
-    >>> from comfychair import Database, Edge, Field, Key, Node, Ordering, UnsupportedQueryError
+    >>> from comfychair import (Database, Edge, Field, Key, Node, Ordering,
+    ...     UnsupportedQueryError, ConflictError, IF_NOT_MODIFIED)
     >>> db = Database()
     >>> scope = 'indexes_' + str(Key())
     >>> class Task(Node):
@@ -141,6 +142,47 @@ filtering, index intersections, !=, OR, field comparisons, or arithmetic.
 
 Pass separate predicates rather than Python and/or or chained comparisons.
 Comparisons of instance values retain ordinary Python behavior.
+
+## Move an Index Entry on Update
+
+Updating an indexed value removes its old membership and creates the new one.
+The primary record keeps its identity.
+
+    >>> moving = Task(key='moving', title='Moving', priority=10)
+    >>> moving.set()
+    >>> Task.count(Task.priority == 10, order_by=Task.priority)
+    1
+    >>> moving.priority = 20
+    >>> moving.status = 'closed'
+    >>> moving.set()
+    >>> Task.count(Task.priority == 10, order_by=Task.priority)
+    0
+    >>> Task.first(Task.priority == 20, order_by=Task.priority).key
+    'moving'
+    >>> Task.count(Task.status == 'open', Task.priority == 10, order_by=Task.priority)
+    0
+    >>> Task.first(Task.status == 'closed', Task.priority == 20,
+    ...     order_by=Task.priority).key
+    'moving'
+    >>> Task.get('moving').priority
+    20
+
+## Preserve Indexes on Conflict
+
+    >>> stale = Task.get('moving')
+    >>> moving.priority = 30
+    >>> moving.set()
+    >>> stale.priority = 40
+    >>> with raises(ConflictError):
+    ...     stale.set(mode=IF_NOT_MODIFIED)
+    >>> Task.get('moving').priority
+    30
+    >>> Task.count(Task.priority == 20, order_by=Task.priority)
+    0
+    >>> Task.first(Task.priority == 30, order_by=Task.priority).key
+    'moving'
+    >>> Task.count(Task.priority == 40, order_by=Task.priority)
+    0
 
 ## Scope Edges by Source
 

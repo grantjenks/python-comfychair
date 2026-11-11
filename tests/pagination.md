@@ -77,6 +77,20 @@ InvalidCursorError. Equivalent predicate objects and argument order are accepted
     >>> [item.key for item in page]
     ['b']
 
+## Change the Page Size
+
+The cursor records a position, not the size of the next request.
+
+    >>> page = Item.page(limit=1)
+    >>> page = Item.page(limit=2, cursor=page.cursor)
+    >>> [item.key for item in page]
+    ['b', 'c']
+    >>> page = Item.page(limit=1, cursor=page.cursor)
+    >>> [item.key for item in page]
+    ['d']
+    >>> page.cursor is None
+    True
+
 ## Read Live Data
 
     >>> page = Item.page(limit=1)
@@ -91,7 +105,24 @@ appear. Changes to filtering or ordering values can skip or repeat records.
 Concurrent deletion can produce short or empty pages with a cursor; continuation
 must advance. A cursor reports observed index entries, not a guaranteed next record.
 
+## Keep an Already Read Page
+
+A later storage update does not change the objects already materialized in a
+page. A new query observes the update.
+
+    >>> page = Item.page(Item.rank == 1, order_by=Item.rank, limit=1)
+    >>> changed = Item.get('a')
+    >>> changed.rank = 9
+    >>> changed.set()
+    >>> [(item.key, item.rank) for item in page]
+    [('a', 1)]
+    >>> Item.get('a').rank
+    9
+
 ## Read After Closing the Connection
+
+The page remains usable. Since Database can reopen, this example alone does
+not establish the no-I/O guarantee; that needs [transport observation](guarantees.md#observe-storage-work).
 
     >>> page = Item.page(limit=2)
     >>> db.close()

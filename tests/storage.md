@@ -59,9 +59,11 @@ query, connection, validation, and decoding errors still propagate.
 
 ## Check Existence
 
-    >>> Task.exists(task.key)
+    >>> present = Task(title='Present')
+    >>> present.set()
+    >>> Task.exists(present.key)
     True
-    >>> Task.exists(missing_key)
+    >>> Task.exists(Key())
     False
 
 Exists accepts the same identity arguments as get. It neither decodes a record
@@ -69,6 +71,8 @@ nor constructs a model. Reads reserve no records or locks for later writes.
 
 ## Refresh in Place
 
+    >>> task = Task(title='Saved')
+    >>> task.set()
     >>> task.title = 'Unsaved'
     >>> same = task
     >>> task.refresh() is None
@@ -76,7 +80,7 @@ nor constructs a model. Reads reserve no records or locks for later writes.
     >>> task is same
     True
     >>> task.title
-    'Second'
+    'Saved'
 
 Refresh loads one replacement normally, then copies its fields and ETag.
 Related nodes are not loaded. Any loading failure leaves the original intact.
@@ -127,6 +131,39 @@ Defaults supply creation fields, with model defaults/factories for the rest;
 they cannot override identity. None is not a primary key. Existing records are
 unchanged. Creation validates before insertion. Concurrent callers cannot
 create duplicates. It executes immediately and is not a batch method.
+
+## Create From Competing Requests
+
+Two connections request the same key with different defaults. Either may win;
+both must receive the stored winner. The barrier starts competing requests but
+does not force a particular server interleaving.
+
+    >>> from concurrent.futures import ThreadPoolExecutor
+    >>> from threading import Barrier
+    >>> clients = [Database(), Database()]
+    >>> ready = Barrier(2)
+    >>> key = Key()
+    >>> def request(index):
+    ...     ready.wait(timeout=10)
+    ...     return Task.get_or_create(
+    ...         key, defaults={'title': ('First request', 'Second request')[index]},
+    ...         using=clients[index],
+    ...     )
+    >>> with ThreadPoolExecutor(max_workers=2) as pool:
+    ...     outcomes = list(pool.map(request, (0, 1)))
+    >>> sorted(created for record, created in outcomes)
+    [False, True]
+    >>> winner = next(record for record, created in outcomes if created)
+    >>> stored = Task.get(key)
+    >>> all(record.key == key and record.title == stored.title
+    ...     and record.etag == stored.etag for record, created in outcomes)
+    True
+    >>> stored.title == winner.title
+    True
+    >>> stored.title in ('First request', 'Second request')
+    True
+    >>> for client in clients:
+    ...     client.close()
 
 ## Cleanup
 

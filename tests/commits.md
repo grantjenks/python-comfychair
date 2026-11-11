@@ -5,7 +5,7 @@ Source: [Commits](../docs/commits.md).
 ## Setup
 
     >>> from pytest import raises
-    >>> from comfychair import Database, Key, Node, Commit, CommitError
+    >>> from comfychair import Database, Key, Node, Commit, CommitError, IF_NOT_MODIFIED
     >>> db = Database()
     >>> scope = 'commits_' + str(Key())
     >>> class Task(Node):
@@ -58,6 +58,28 @@ are rejected when queued.
 
 Set returns Result[None]. Add and delete return Result[bool], indicating actual
 insertion/deletion at the operation's position. Ignoring a handle is permitted.
+
+## Capture the ETag at Exit
+
+An independent save updates the queued object's ETag. The batch uses that final
+token, along with its final fields.
+
+    >>> task = Task(title='Original')
+    >>> task.set()
+    >>> with Commit() as batch:
+    ...     saved = batch.set(task, mode=IF_NOT_MODIFIED)
+    ...     task.title = 'Immediate'
+    ...     task.set()
+    ...     immediate_etag = task.etag
+    ...     task.title = 'Queued'
+    >>> saved.value is None
+    True
+    >>> Task.get(task.key).title
+    'Queued'
+    >>> task.etag == Task.get(task.key).etag
+    True
+    >>> task.etag == immediate_etag
+    False
 
 ## Reject a Mode When Queued
 

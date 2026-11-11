@@ -41,7 +41,8 @@ body. Field() without a default requires a value.
     >>> item = Item(title='Introduction')
     >>> item.priority
     0
-    >>> isinstance(Item.priority, Field)
+    >>> item.set()
+    >>> Item.first(Item.priority == 0, order_by=Item.priority).key == item.key
     True
     >>> with raises(TypeError):
     ...     Item()
@@ -65,6 +66,19 @@ Descriptors form [query predicates](indexes.md).
     >>> second = Draft()
     >>> calls
     ['factory', 'factory']
+
+## Do Not Repeat Present Defaults
+
+    >>> first.set()
+    >>> calls.clear()
+    >>> restored = Draft.get(first.key)
+    >>> restored.title
+    'Untitled'
+    >>> calls
+    []
+
+Missing optional fields use defaults or factories. Missing required fields
+fail. Loading never generates replacement identity. See [Schema Changes](adapters.md).
 
 ## Load Through the Constructor
 
@@ -93,19 +107,6 @@ stored ETag and database association. There are no extra lifecycle hooks.
 Overrides must accept declared keyword fields. Construction also occurs on
 reads; it does not mean the record is new. Reads do not call application
 validate(), but decoding checks representations and required identity/fields.
-
-## Do Not Repeat Present Defaults
-
-    >>> first.set()
-    >>> calls.clear()
-    >>> restored = Draft.get(first.key)
-    >>> restored.title
-    'Untitled'
-    >>> calls
-    []
-
-Missing optional fields use defaults or factories. Missing required fields
-fail. Loading never generates replacement identity. See [Schema Changes](adapters.md).
 
 ## Declare Typed Endpoints
 

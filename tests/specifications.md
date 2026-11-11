@@ -4,32 +4,48 @@ Small examples specify the public API. Each Markdown page is also a doctest
 file. Expected results are requirements, not results observed from an
 implementation. Comfy Chair is not implemented yet.
 
-## Pages
+## Start Here
 
-- [Example](example.md)
+[Example](example.md) shows models, storage, relationships, and queries together.
+The pages below isolate individual behaviors in smaller examples.
+
+## Models and Storage
+
 - [Models and Fields](models.md)
 - [Keys and Namespaces](identity.md)
 - [Store and Retrieve](storage.md)
 - [Write Modes and ETags](write-modes.md)
 - [Deletion](deletion.md)
-- [Database Selection](database.md)
-- [Connection Lifetime](connections.md)
+- [Relationships and Ownership](relationships.md)
+- [Choices and Validation](validation.md)
+- [Errors and Arguments](errors.md)
+
+## Queries and Traversal
+
 - [Ordered Queries](indexes.md)
 - [Indexed Values and Adapters](index-values.md)
 - [Pages and Cursors](pagination.md)
 - [Iteration and Observable Work](iteration.md)
-- [Decoding and Loading](decoding.md)
+
+## Commits and Mutations
+
 - [Commits](commits.md)
 - [Commit Conditions and Instance State](commit-conditions.md)
 - [Retrying Commits](retries.md)
 - [Mutations](mutations.md)
 - [Mutation Working Copies](working-copies.md)
-- [Relationships and Ownership](relationships.md)
-- [Choices and Validation](validation.md)
+
+## Connections and Serialization
+
+- [Database Selection](database.md)
+- [Connection Lifetime](connections.md)
 - [JSON Serialization](serialization.md)
 - [JSON Engines](json-engines.md)
 - [Custom Types and Schema Changes](adapters.md)
-- [Errors and Arguments](errors.md)
+- [Decoding and Loading](decoding.md)
+
+## Observation and Coverage
+
 - [Concurrency and Failure Guarantees](guarantees.md)
 - [Coverage](coverage.md)
 
@@ -64,6 +80,12 @@ and omit prompts and expected output. Copy Transcript should preserve both.
 No renderer, custom parser, test harness, or implementation is introduced here.
 
 ## Scope
+
+Examples protect documented behavior while leaving implementation choices open.
+Use ordinary Python protocols, representative inputs, and meaningful failure
+cases. Avoid fixing incidental representations, exact messages, or internal
+classes. Add an example when it explains a useful behavior or catches a plausible
+regression, rather than to enumerate every argument combination.
 
 Passing a transcript demonstrates its particular observations. Brief rules
 cover behavior requiring concurrency, transport failures, storage inspection,

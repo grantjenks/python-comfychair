@@ -6,6 +6,7 @@ Source: [Database Configuration](../docs/database.md).
 
 These examples need independent Redis databases 0 and 1 on one local primary.
 
+    >>> from pytest import raises
     >>> from comfychair import Database, Edge, Key, Node, Commit, IF_NOT_MODIFIED
     >>> original_default = Database.default()
     >>> primary = Database('redis://localhost:6379/0')
@@ -53,6 +54,9 @@ Rebinding to the same selection is a no-op.
 
 ## Prefer an Instance Association
 
+The model is bound to archive; this instance was read from primary.
+
+    >>> note = Note.get(note.key, using=primary)
     >>> note.title = 'Primary edit'
     >>> note.set()
     >>> Note.get(note.key, using=primary).title
@@ -102,10 +106,11 @@ process-wide, not ambient, thread-local, or context-local; configure at startup.
 ## Compare Tokens Across Connection Objects
 
     >>> second_connection = Database('redis://localhost:6379/0')
-    >>> current = Note.get(note.key, using=primary)
+    >>> current = Note(title='Original')
+    >>> current.set(using=primary)
     >>> current.title = 'Conditional'
     >>> current.set(mode=IF_NOT_MODIFIED, using=second_connection)
-    >>> Note.get(note.key, using=primary).title
+    >>> Note.get(current.key, using=primary).title
     'Conditional'
 
 ETags compare against the selected store without reader provenance. A missing
@@ -116,16 +121,20 @@ record or mismatched token conflicts. Refresh and mutate use the same routing.
 From-json selects adapters without associating the decoded object with that
 database. A subsequent write still uses its model binding.
 
-    >>> detached = Note.from_json(current.to_json(), using=primary)
+    >>> archive.bind(Note)
+    >>> original = Note(title='Original')
+    >>> original.set(using=primary)
+    >>> detached = Note.from_json(original.to_json(), using=primary)
     >>> detached.title = 'Decoded'
     >>> detached.set()
     >>> Note.get(detached.key, using=archive).title
     'Decoded'
     >>> Note.get(detached.key, using=primary).title
-    'Conditional'
+    'Original'
 
 ## Remember an Absent Delete's Destination
 
+    >>> archive.bind(Note)
     >>> absent = Note(title='Absent')
     >>> absent.delete(using=primary)
     False
@@ -140,11 +149,15 @@ database. A subsequent write still uses its model binding.
     >>> class Link(Edge[Note, Note]):
     ...     namespace = scope
     >>> archive.bind(Link)
-    >>> link = Link(source=absent, target=current)
+    >>> source = Note(title='Source')
+    >>> target = Note(title='Target')
+    >>> source.set(using=primary)
+    >>> target.set(using=primary)
+    >>> link = Link(source=source, target=target)
     >>> link.set()
-    >>> Link.exists(absent.key, current.key, using=archive)
+    >>> Link.exists(source.key, target.key, using=archive)
     True
-    >>> Link.exists(absent.key, current.key, using=primary)
+    >>> Link.exists(source.key, target.key, using=primary)
     False
 
 Endpoints are plain keys. Passing model instances extracts keys but does not
@@ -155,7 +168,7 @@ independently.
 
     >>> with Commit(using=primary) as batch:
     ...     _ = batch.set(link)
-    >>> Link.exists(absent.key, current.key, using=primary)
+    >>> Link.exists(source.key, target.key, using=primary)
     True
 
 Without explicit using, all queued selections must be the same Database object,
@@ -163,6 +176,58 @@ even when URLs match. Conflicting selections reject before writes. Model-and-key
 deletes use the model binding/default. Batch methods accept no per-operation
 using. Empty batches do nothing. Unbound, unassociated records share the default.
 Explicit commit routing does not route ordinary calls, including retry reads.
+
+## Reject Conflicting Destinations
+
+Both records have database associations. A batch without using cannot combine
+them. Rejection must precede either write. These routing examples leave the
+exception subtype open because the routing contract does not specify one.
+
+    >>> first = Note(title='Primary original')
+    >>> first.set(using=primary)
+    >>> second = Note(title='Archive original')
+    >>> second.set(using=archive)
+    >>> first.title = 'Primary queued'
+    >>> second.title = 'Archive queued'
+    >>> with raises(Exception):
+    ...     with Commit() as batch:
+    ...         _ = batch.set(first)
+    ...         _ = batch.set(second)
+    >>> Note.get(first.key, using=primary).title
+    'Primary original'
+    >>> Note.get(second.key, using=archive).title
+    'Archive original'
+
+## Distinguish Connections With Equal URLs
+
+Equal URLs do not make two Database objects one batch destination.
+
+    >>> first = Note(title='First original')
+    >>> first.set(using=primary)
+    >>> second = Note(title='Second original')
+    >>> second.set(using=second_connection)
+    >>> first.title = 'First queued'
+    >>> second.title = 'Second queued'
+    >>> with raises(Exception):
+    ...     with Commit() as batch:
+    ...         _ = batch.set(first)
+    ...         _ = batch.set(second)
+    >>> Note.get(first.key, using=primary).title
+    'First original'
+    >>> Note.get(second.key, using=primary).title
+    'Second original'
+
+## Resolve the Batch Destination Explicitly
+
+The same records can be saved together by selecting one connection for the batch.
+
+    >>> with Commit(using=primary) as batch:
+    ...     _ = batch.set(first)
+    ...     _ = batch.set(second)
+    >>> Note.get(first.key, using=primary).title
+    'First queued'
+    >>> Note.get(second.key, using=primary).title
+    'Second queued'
 
 ## Routing Rules
 
@@ -175,7 +240,7 @@ StorageError from that selection; there is no fallback database.
 ## Cleanup
 
     >>> for database in (primary, archive):
-    ...     for record in Link.iterate(absent.key, using=database, batch_size=100):
+    ...     for record in Link.iterate(source.key, using=database, batch_size=100):
     ...         _ = record.delete(using=database)
     ...     for model in (Note, Unbound):
     ...         for record in model.iterate(using=database, batch_size=100):
